@@ -1726,6 +1726,75 @@ fn resolve_agent_definition(
     ctx.apply_session_cli_overrides(&mut def);
     Some(def)
 }
+
+/// Resolve only a canonical specialist.  Generic top-level profiles remain
+/// valid primary/harness definitions, but must not become spawnable merely
+/// because the generic resolver can find them.
+fn resolve_specialist_definition(
+    subagent_type: &str,
+    ctx: &SubagentSpawnContext,
+) -> Option<xai_grok_agent::config::AgentDefinition> {
+    let additional = ctx
+        .agent_config
+        .as_ref()
+        .map_or(&[][..], |cfg| cfg.cli_agents.as_slice());
+    let in_catalog = xai_grok_agent::discovery::specialist_catalog_with_plugins_and_additional(
+        &ctx.parent_cwd,
+        &ctx.subagent_toggle,
+        ctx.plugin_registry.as_deref(),
+        None,
+        additional,
+    )
+    .iter()
+    .any(|entry| entry.entry.name == subagent_type);
+    if !in_catalog {
+        return None;
+    }
+    resolve_agent_definition(subagent_type, ctx)
+}
+
+fn catalog_eligibility(
+    subagent_type: &str,
+    parent_cwd: &Path,
+    toggle: &HashMap<String, bool>,
+    plugins: Option<&xai_grok_agent::plugins::PluginRegistry>,
+    allowed_subagent_types: Option<&[String]>,
+    cli_agents: &[xai_grok_agent::config::AgentDefinition],
+) -> Option<xai_grok_agent::discovery::SpecialistEligibility> {
+    xai_grok_agent::discovery::specialist_catalog_with_plugins_and_additional(
+        parent_cwd,
+        toggle,
+        plugins,
+        allowed_subagent_types,
+        cli_agents,
+    )
+    .into_iter()
+    .find(|entry| entry.entry.name == subagent_type)
+    .map(|entry| entry.eligibility)
+}
+
+fn available_specialist_names(
+    parent_cwd: &Path,
+    toggle: &HashMap<String, bool>,
+    plugins: Option<&xai_grok_agent::plugins::PluginRegistry>,
+    allowed_subagent_types: Option<&[String]>,
+    cli_agents: &[xai_grok_agent::config::AgentDefinition],
+) -> Vec<String> {
+    let mut available: Vec<String> =
+        xai_grok_agent::discovery::specialist_catalog_with_plugins_and_additional(
+            parent_cwd,
+            toggle,
+            plugins,
+            allowed_subagent_types,
+            cli_agents,
+        )
+        .into_iter()
+        .filter(|entry| entry.eligibility.is_eligible())
+        .map(|entry| entry.entry.name)
+        .collect();
+    available.sort();
+    available
+}
 /// Minimal per-session context for `validate_subagent_type`.
 /// Avoids the heavy `SubagentSpawnContext` clone on the validation hot path.
 #[derive(Default)]
@@ -1734,7 +1803,7 @@ pub(crate) struct SubagentValidationContext {
     pub plugin_registry: Option<Arc<xai_grok_agent::plugins::PluginRegistry>>,
     pub subagent_toggle: HashMap<String, bool>,
     pub allowed_subagent_types: Option<Vec<String>>,
-    pub cli_agent_names: Vec<String>,
+    pub cli_agents: Vec<xai_grok_agent::config::AgentDefinition>,
 }
 impl SubagentValidationContext {
     /// Toggle lookup; absent keys default to enabled.
@@ -1748,47 +1817,35 @@ pub(crate) fn validate_subagent_type(
     subagent_type: &str,
     ctx: &SubagentValidationContext,
 ) -> SubagentValidateTypeOutcome {
-    let resolves = ctx.cli_agent_names.iter().any(|n| n == subagent_type)
-        || xai_grok_agent::discovery::by_name_in_cwd_with_plugins(
-            subagent_type,
-            &ctx.parent_cwd,
-            ctx.plugin_registry.as_deref(),
-        )
-        .is_some();
-    if !resolves {
-        let mut available: Vec<String> = xai_grok_agent::discovery::all_subagents_with_plugins(
-            &ctx.parent_cwd,
-            &ctx.subagent_toggle,
-            ctx.plugin_registry.as_deref(),
-        )
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-        let mut seen: std::collections::HashSet<String> = available.iter().cloned().collect();
-        for name in &ctx.cli_agent_names {
-            if !ctx.is_subagent_enabled(name) {
-                continue;
-            }
-            if seen.insert(name.clone()) {
-                available.push(name.clone());
+    match catalog_eligibility(
+        subagent_type,
+        &ctx.parent_cwd,
+        &ctx.subagent_toggle,
+        ctx.plugin_registry.as_deref(),
+        ctx.allowed_subagent_types.as_deref(),
+        &ctx.cli_agents,
+    ) {
+        Some(xai_grok_agent::discovery::SpecialistEligibility::Eligible) => {
+            SubagentValidateTypeOutcome::Ok
+        }
+        Some(xai_grok_agent::discovery::SpecialistEligibility::Disabled) => {
+            SubagentValidateTypeOutcome::Disabled
+        }
+        Some(xai_grok_agent::discovery::SpecialistEligibility::ParentRestricted) => {
+            SubagentValidateTypeOutcome::NotAllowed {
+                allowed: ctx.allowed_subagent_types.clone().unwrap_or_default(),
             }
         }
-        available.sort();
-        return SubagentValidateTypeOutcome::Unknown { available };
+        None => SubagentValidateTypeOutcome::Unknown {
+            available: available_specialist_names(
+                &ctx.parent_cwd,
+                &ctx.subagent_toggle,
+                ctx.plugin_registry.as_deref(),
+                ctx.allowed_subagent_types.as_deref(),
+                &ctx.cli_agents,
+            ),
+        },
     }
-    if !ctx.is_subagent_enabled(subagent_type) {
-        return SubagentValidateTypeOutcome::Disabled;
-    }
-    if let Some(ref allowed) = ctx.allowed_subagent_types
-        && !allowed
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case(subagent_type))
-    {
-        return SubagentValidateTypeOutcome::NotAllowed {
-            allowed: allowed.clone(),
-        };
-    }
-    SubagentValidateTypeOutcome::Ok
 }
 /// Gate an already-resolved subagent type against the `[subagents.toggle]`
 /// disable map and the parent's allow-list.
@@ -1895,7 +1952,7 @@ fn summarize_tool_config(
 /// Describe a subagent type's resolved toolset WITHOUT spawning it.
 ///
 /// Runs the same resolution path as [`handle_subagent_request`] —
-/// [`resolve_agent_definition`] + [`gate_subagent_type`] +
+/// [`resolve_specialist_definition`] + [`gate_subagent_type`] +
 /// [`resolve_subagent_toolset`] — then summarizes the resulting
 /// `tool_config`. Backs the `SubagentEvent::DescribeType` drain arm; the
 /// parent uses the summary for the per-role capability gate and prompt
@@ -1915,30 +1972,30 @@ pub(crate) fn describe_subagent_type(
     harness_agent_type: Option<&str>,
     ctx: &SubagentSpawnContext,
 ) -> SubagentDescribeOutcome {
+    let cli_agents = ctx
+        .agent_config
+        .as_ref()
+        .map_or(&[][..], |cfg| cfg.cli_agents.as_slice());
     if let Some(harness) = harness_agent_type
         && resolve_agent_definition(harness, ctx).is_none()
     {
-        let mut available: Vec<String> = xai_grok_agent::discovery::all_subagents_with_plugins(
+        let available = available_specialist_names(
             &ctx.parent_cwd,
             &ctx.subagent_toggle,
             ctx.plugin_registry.as_deref(),
-        )
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-        available.sort();
+            ctx.allowed_subagent_types.as_deref(),
+            cli_agents,
+        );
         return SubagentDescribeOutcome::Unknown { available };
     }
-    let Some(mut definition) = resolve_agent_definition(subagent_type, ctx) else {
-        let mut available: Vec<String> = xai_grok_agent::discovery::all_subagents_with_plugins(
+    let Some(mut definition) = resolve_specialist_definition(subagent_type, ctx) else {
+        let available = available_specialist_names(
             &ctx.parent_cwd,
             &ctx.subagent_toggle,
             ctx.plugin_registry.as_deref(),
-        )
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-        available.sort();
+            ctx.allowed_subagent_types.as_deref(),
+            cli_agents,
+        );
         return SubagentDescribeOutcome::Unknown { available };
     };
     match gate_subagent_type(subagent_type, ctx) {

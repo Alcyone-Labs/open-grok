@@ -25,6 +25,48 @@ Manage both in the agents modal. Open it with `/config-agents` (alias `/agents`)
 
 ---
 
+## Specialists: Primary Session vs Child
+
+Open Grok treats **specialists** as agent definitions that can run as children
+(and, when selected as the session agent, as the primary). Primary-only
+profiles such as `grok-build` or `grok-build-orchestrator` stay valid for the
+main session and harness selection, but they are **not** advertised as
+Task/`spawn_subagent` specialists unless they also appear in the specialist
+catalog (built-in subagent variants, discovered user/project agents, plugins,
+and CLI additional agents).
+
+### Main session specialist
+
+Start Open Grok on a specialist as the session agent:
+
+```bash
+open-grok --agent mecha-builder
+# or a definition path / name under ~/.opengrok/agents or .opengrok/agents
+open-grok --agent ~/.opengrok/agents/mecha-builder.md
+```
+
+Agent markdown lives in:
+
+- `~/.opengrok/agents/*.md` (user)
+- `.opengrok/agents/*.md` (project)
+
+### Child specialists
+
+Delegate work to a child specialist in two ways:
+
+1. **Model tool** — the main agent calls `spawn_subagent` with
+   `subagent_type` set to a catalog-eligible specialist (for example
+   `explore`, `plan`, or a custom agent name).
+2. **Slash command** — run `/specialist <name> <task>` to force a foreground
+   specialist run (same eligibility gates as the tool).
+
+The agents modal (`/config-agents`) expands each entry with **Specialist
+availability** (`available`, `disabled`, `not allowed by parent`, or
+`primary-only profile`) and the agent's **Model** pin (`inherit` or a model
+id).
+
+---
+
 ## Disabling Subagents
 
 Disable subagents with an environment variable or the config file:
@@ -79,7 +121,7 @@ instructions = "You are a thorough researcher. Always cite specific file paths."
 description = "Deep investigator."
 ```
 
-Grok Build discovers file-based personas from these locations, in priority order:
+Open Grok discovers file-based personas from these locations, in priority order:
 
 - `.opengrok/personas/*.toml` (project)
 - `~/.opengrok/personas/*.toml` (user)
@@ -89,7 +131,7 @@ Each file defines one persona, and the file name (without the extension) becomes
 
 Manage personas in the Personas tab of the agents modal (`/personas`). Bundled personas are read-only; personas you define are editable.
 
-> **Note:** Grok Build applies personas through subagent resolution and roles, not through a `spawn_subagent` parameter. The main agent does not pass a persona name when it spawns a child.
+> **Note:** Open Grok applies personas through subagent resolution and roles, not through a `spawn_subagent` parameter. The main agent does not pass a persona name when it spawns a child.
 
 ### Persona Fields
 
@@ -125,7 +167,7 @@ Each field has a `name`, an `io_type` (defaults to `file`), a `required` flag, a
 
 ### Persona Resolution
 
-When a persona applies, Grok Build resolves the effective model and reasoning effort in this order, highest priority first:
+When a persona applies, Open Grok resolves the effective model and reasoning effort in this order, highest priority first:
 
 1. Explicit spawn-time override
 2. Role default
@@ -193,7 +235,7 @@ For tasks that modify files, run a subagent in an isolated git worktree with `is
 - Its changes stay isolated from the parent until you merge them.
 - The subagent's result includes the worktree path.
 
-Grok Build manages worktrees through the `x.ai/git/worktree/*` extension methods, including an apply operation that merges changes back into the main working directory.
+Open Grok manages worktrees through the `x.ai/git/worktree/*` extension methods, including an apply operation that merges changes back into the main working directory.
 
 ---
 
@@ -212,7 +254,52 @@ plan = false                         # disable the plan subagent
 explore = "grok-build"               # route explore to a specific model
 ```
 
-Per-type model overrides apply for any parent. Without an override, a subagent inherits the parent's model.
+By default a subagent inherits the parent session's model. Explicit pins
+override that, in this order (highest priority first):
+
+1. Spawn-time / runtime model override (when the host supplies one)
+2. `[subagents.models].<agent>` in `config.toml`
+3. Agent definition frontmatter `model:` (see below)
+4. Parent session model
+
+Both config and frontmatter pins apply for any parent. An unknown model id in
+frontmatter or `[subagents.models]` logs a warning and falls through to the
+next source. A model-facing `spawn_subagent` / Task `model` argument that does
+not resolve fails the tool call with `invalid_arguments` instead of silently
+inheriting.
+
+### Agent definition `model:` affinity
+
+Pin sampling on an agent markdown file:
+
+```markdown
+---
+name: explore-fast
+description: Lightweight codebase explorer
+model: grok-3-fast
+tools:
+  - read_file
+  - grep
+  - run_terminal_cmd
+---
+
+Investigate the codebase. Prefer search over broad reads.
+```
+
+Use `model: inherit` (or omit `model`) to keep the parent session model unless
+`[subagents.models]` pins the type. The agents modal shows the resolved pin as
+**Model: inherit** or **Model: &lt;id&gt;**.
+
+### Tool names: body vs frontmatter
+
+| Surface | Spawn tool | Shell tool |
+| --- | --- | --- |
+| Model-facing tool names (prompt body, runtime) | `spawn_subagent` | `run_terminal_command` |
+| Frontmatter allow/deny lists (`tools`, `disallowedTools`, `Agent(...)`) | `task` / `Agent(...)` | `run_terminal_cmd` |
+
+Write prompt bodies with the model-facing names. In YAML frontmatter tool
+lists, use the canonical frontmatter identifiers (`task`, `run_terminal_cmd`,
+and `Agent(name)` permission forms).
 
 ### Custom Roles and Personas
 
@@ -234,13 +321,13 @@ instructions = "Be concise. No filler words."
 # instructions_file = ".opengrok/personas/concise.md"  # or load from a file
 ```
 
-Grok Build also discovers roles from `.opengrok/roles/*.toml` and personas from `.opengrok/personas/*.toml`. Inline `config.toml` definitions take precedence over files.
+Open Grok also discovers roles from `.opengrok/roles/*.toml` and personas from `.opengrok/personas/*.toml`. Inline `config.toml` definitions take precedence over files.
 
 ---
 
 ## The Tasks Pane (TUI)
 
-Grok Build shows running and finished work in side panes on the agent screen:
+Open Grok shows running and finished work in side panes on the agent screen:
 
 - Press `Ctrl+B` to toggle the tasks pane, which lists active and completed subagents and background commands with their status.
 - Press `Ctrl+T` to toggle the separate todo pane.

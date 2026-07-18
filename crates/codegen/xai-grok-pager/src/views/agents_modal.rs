@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
 use xai_grok_agent::config::{AgentDefinition, AgentScope, BuiltinAgentName};
+use xai_grok_agent::discovery::SpecialistEligibility;
 use xai_grok_shell::agent::config::AgentSelectionConfig;
 use xai_grok_tools::implementations::skills::discovery::extract_first_paragraph;
 use xai_grok_tools::registry::types::ToolServerConfig;
@@ -59,6 +60,9 @@ pub struct AgentListEntry {
     pub scope: AgentScope,
     pub source_path: Option<PathBuf>,
     pub enabled: bool,
+    /// Specialist availability from the canonical discovery catalog. `None`
+    /// means this is a primary-only profile, not an error or hidden config.
+    pub specialist_eligibility: Option<SpecialistEligibility>,
     pub is_builtin: bool,
     pub expanded: bool,
     pub definition: AgentDefinition,
@@ -287,17 +291,24 @@ impl AgentsModalState {
 /// Build the full agent list: user-visible built-ins first, then
 /// file-based agents from discovery, with dedup.
 pub fn build_agent_list(cwd: &Path, toggle: &HashMap<String, bool>) -> Vec<AgentListEntry> {
+    let specialist_eligibility: HashMap<String, SpecialistEligibility> =
+        xai_grok_agent::discovery::specialist_catalog_with_plugins(cwd, toggle, None, None)
+            .into_iter()
+            .map(|entry| (entry.entry.name, entry.eligibility))
+            .collect();
     let mut entries = Vec::new();
     for &builtin in user_visible_builtins() {
         let def = builtin.definition();
         let name = def.name.clone();
         let enabled = toggle.get(&name).copied().unwrap_or(true);
+        let eligibility = specialist_eligibility.get(&name).copied();
         entries.push(AgentListEntry {
             name,
             description: def.description.clone(),
             scope: AgentScope::BuiltIn,
             source_path: None,
             enabled,
+            specialist_eligibility: eligibility,
             is_builtin: true,
             expanded: false,
             definition: def,
@@ -334,6 +345,7 @@ pub fn build_agent_list(cwd: &Path, toggle: &HashMap<String, bool>) -> Vec<Agent
                     scope: def.scope,
                     source_path: def.source_path.clone(),
                     enabled,
+                    specialist_eligibility: specialist_eligibility.get(&def.name).copied(),
                     is_builtin: false,
                     expanded: false,
                     definition: def,
@@ -347,6 +359,7 @@ pub fn build_agent_list(cwd: &Path, toggle: &HashMap<String, bool>) -> Vec<Agent
                 scope: def.scope,
                 source_path: def.source_path.clone(),
                 enabled,
+                specialist_eligibility: specialist_eligibility.get(&def.name).copied(),
                 is_builtin: false,
                 expanded: false,
                 definition: def,
@@ -714,6 +727,13 @@ pub fn format_agent_detail(entry: &AgentListEntry) -> Vec<String> {
         lines.push(format!("  Source: {}", path.display()));
     }
     lines.push(format!("  Scope: {}", entry.scope.label()));
+    match &entry.specialist_eligibility {
+        Some(eligibility) => lines.push(format!(
+            "  Specialist availability: {}",
+            eligibility.catalog_label()
+        )),
+        None => lines.push("  Specialist availability: primary-only profile".to_string()),
+    }
     if let Some(ref body) = def.prompt_body {
         let rendered = render_prompt_body(body, &def.tool_config);
         let char_count = rendered.chars().count();
@@ -2469,6 +2489,44 @@ pub fn handle_agents_mouse(state: &mut AgentsModalState, mouse: &MouseEvent) -> 
 mod tests {
     use super::*;
     use xai_grok_shell::agent::config::DEFAULT_AGENT_TYPE;
+
+    #[test]
+    fn agent_catalog_detail_uses_canonical_specialist_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let entries = build_agent_list(temp.path(), &HashMap::new());
+        let explore = entries
+            .iter()
+            .find(|entry| entry.name == "explore")
+            .expect("built-in explore is listed");
+        assert_eq!(
+            explore.specialist_eligibility,
+            Some(SpecialistEligibility::Eligible)
+        );
+        assert!(
+            format_agent_detail(explore)
+                .iter()
+                .any(|line| line == "  Specialist availability: available"),
+            "the pager detail must use the canonical safe availability label"
+        );
+        assert!(
+            format_agent_detail(explore)
+                .iter()
+                .any(|line| line.starts_with("  Model: ")),
+            "expanded detail must surface the agent model pin (inherit or id)"
+        );
+        let grok_build = entries
+            .iter()
+            .find(|entry| entry.name == "grok-build")
+            .expect("primary profile is listed");
+        assert_eq!(grok_build.specialist_eligibility, None);
+        assert!(
+            format_agent_detail(grok_build)
+                .iter()
+                .any(|line| { line == "  Specialist availability: primary-only profile" }),
+            "primary-only profiles must use the primary-only label"
+        );
+    }
+
     #[test]
     fn agents_tab_next_cycles() {
         assert_eq!(AgentsTab::Agents.next(), AgentsTab::Personas);

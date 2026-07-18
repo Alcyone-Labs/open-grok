@@ -39,13 +39,11 @@ impl MvpAgent {
                                     ctx.parent_mcp_pool = handle.snapshot_mcp_pool().await;
                                     ctx.client_hooks = handle.snapshot_client_hooks().await;
                                     if request.fork_context {
-                                        let parent_tools =
-                                            handle.snapshot_tool_definitions().await;
-                                        ctx.parent_tool_snapshot = (!parent_tools
-                                            .function_tools
-                                            .is_empty()
-                                            || parent_tools.resolved_policy.is_some())
-                                        .then_some(parent_tools);
+                                        let parent_tools = handle.snapshot_tool_definitions().await;
+                                        ctx.parent_tool_snapshot =
+                                            (!parent_tools.function_tools.is_empty()
+                                                || parent_tools.resolved_policy.is_some())
+                                            .then_some(parent_tools);
                                     }
                                 }
                                 crate::agent::subagent::handle_subagent_request(
@@ -274,16 +272,16 @@ impl MvpAgent {
                 ps.and_then(|h| h.allowed_subagent_types.clone()),
             )
         };
-        let cli_agent_names: Vec<String> = {
+        let cli_agents = {
             let cfg = self.cfg.borrow();
-            cfg.cli_agents.iter().map(|d| d.name.clone()).collect()
+            cfg.cli_agents.clone()
         };
         crate::agent::subagent::SubagentValidationContext {
             parent_cwd,
             plugin_registry: self.plugin_registry_handle.snapshot(),
             subagent_toggle: self.subagent_toggle.clone(),
             allowed_subagent_types,
-            cli_agent_names,
+            cli_agents,
         }
     }
     /// Build a `SubagentSpawnContext` from the current agent state and the

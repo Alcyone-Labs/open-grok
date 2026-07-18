@@ -52,6 +52,61 @@ pub struct SubagentEntry {
     pub config_source: ConfigSource,
 }
 
+/// The reason a discovered specialist is or is not callable by a particular
+/// parent agent.  This is deliberately small and display-safe: it describes
+/// policy, never the definition's tools, prompt, paths, or credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialistEligibility {
+    /// The specialist is discoverable and permitted for this parent.
+    Eligible,
+    /// `[subagents.toggle]` disables this specialist.
+    Disabled,
+    /// The parent agent's `Agent(...)` allow-list excludes this specialist.
+    ParentRestricted,
+}
+
+impl SpecialistEligibility {
+    pub fn is_eligible(self) -> bool {
+        matches!(self, Self::Eligible)
+    }
+
+    /// Stable, non-sensitive text suitable for a read-only catalog.
+    pub fn catalog_label(self) -> &'static str {
+        match self {
+            Self::Eligible => "available",
+            Self::Disabled => "disabled",
+            Self::ParentRestricted => "not allowed by parent",
+        }
+    }
+}
+
+/// A canonical specialist catalog entry.  Every consumer must derive
+/// advertisement, direct lookup validation, and spawn eligibility from this
+/// shape rather than independently reimplementing discovery precedence.
+#[derive(Debug, Clone)]
+pub struct SpecialistCatalogEntry {
+    pub entry: SubagentEntry,
+    pub eligibility: SpecialistEligibility,
+}
+
+fn eligibility_for(
+    name: &str,
+    toggle: &HashMap<String, bool>,
+    allowed_subagent_types: Option<&[String]>,
+) -> SpecialistEligibility {
+    if !toggle.get(name).copied().unwrap_or(true) {
+        SpecialistEligibility::Disabled
+    } else if allowed_subagent_types.is_some_and(|allowed| {
+        !allowed
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(name))
+    }) {
+        SpecialistEligibility::ParentRestricted
+    } else {
+        SpecialistEligibility::Eligible
+    }
+}
+
 /// Where a subagent entry came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubagentSource {
@@ -93,6 +148,13 @@ fn merge_subagents(
     discovered: Vec<AgentDefinition>,
     toggle: &HashMap<String, bool>,
 ) -> Vec<SubagentEntry> {
+    merge_subagent_candidates(discovered)
+        .into_iter()
+        .filter(|entry| eligibility_for(&entry.name, toggle, None).is_eligible())
+        .collect()
+}
+
+fn merge_subagent_candidates(discovered: Vec<AgentDefinition>) -> Vec<SubagentEntry> {
     fn discovered_scope_priority(scope: AgentScope) -> usize {
         match scope {
             AgentScope::Project => 3,
@@ -173,11 +235,7 @@ fn merge_subagents(
         }
     }
 
-    // 3. Filter by toggle (omitted = enabled)
     entries
-        .into_iter()
-        .filter(|e| toggle.get(&e.name).copied().unwrap_or(true))
-        .collect()
 }
 
 /// Discover all agent definitions from the filesystem.
@@ -363,25 +421,105 @@ pub fn all_subagents_with_plugins(
     toggle: &HashMap<String, bool>,
     plugins: Option<&crate::plugins::PluginRegistry>,
 ) -> Vec<SubagentEntry> {
-    let grok = xai_grok_config::user_grok_home();
-    all_subagents_with_plugins_and_home(
-        cwd,
-        toggle,
-        plugins,
-        dirs::home_dir().as_deref(),
-        grok.as_deref(),
-    )
+    eligible_specialists_with_plugins(cwd, toggle, plugins, None)
 }
 
-fn all_subagents_with_plugins_and_home(
+/// Build the callable specialist set for one parent context.
+///
+/// This is the model-facing Task catalog.  It is derived from the same
+/// canonical catalog used by direct lookup and spawn validation, so an entry
+/// advertised to a parent is always eligible for that parent at this instant.
+pub fn eligible_specialists_with_plugins(
     cwd: &Path,
     toggle: &HashMap<String, bool>,
     plugins: Option<&crate::plugins::PluginRegistry>,
+    allowed_subagent_types: Option<&[String]>,
+) -> Vec<SubagentEntry> {
+    eligible_specialists_with_plugins_and_additional(
+        cwd,
+        toggle,
+        plugins,
+        allowed_subagent_types,
+        &[],
+    )
+}
+
+/// Build the callable specialist set, including explicit session-provided
+/// definitions such as CLI agent profiles.  Native discovery retains its
+/// precedence over additional definitions with the same name.
+pub fn eligible_specialists_with_plugins_and_additional(
+    cwd: &Path,
+    toggle: &HashMap<String, bool>,
+    plugins: Option<&crate::plugins::PluginRegistry>,
+    allowed_subagent_types: Option<&[String]>,
+    additional: &[AgentDefinition],
+) -> Vec<SubagentEntry> {
+    specialist_catalog_with_plugins_and_additional(
+        cwd,
+        toggle,
+        plugins,
+        allowed_subagent_types,
+        additional,
+    )
+    .into_iter()
+    .filter(|entry| entry.eligibility.is_eligible())
+    .map(|entry| entry.entry)
+    .collect()
+}
+
+/// Discover every specialist candidate together with its eligibility for a
+/// parent context.  The result retains disabled and parent-restricted entries
+/// for read-only status UI, while callers that advertise or spawn must select
+/// only [`SpecialistEligibility::Eligible`].
+pub fn specialist_catalog_with_plugins(
+    cwd: &Path,
+    toggle: &HashMap<String, bool>,
+    plugins: Option<&crate::plugins::PluginRegistry>,
+    allowed_subagent_types: Option<&[String]>,
+) -> Vec<SpecialistCatalogEntry> {
+    specialist_catalog_with_plugins_and_additional(
+        cwd,
+        toggle,
+        plugins,
+        allowed_subagent_types,
+        &[],
+    )
+}
+
+/// Discover every specialist candidate, including explicit session-provided
+/// definitions.  This keeps the Task catalog, direct lookup, and spawn
+/// validation on one discovery/eligibility projection when CLI agents are in
+/// scope.
+pub fn specialist_catalog_with_plugins_and_additional(
+    cwd: &Path,
+    toggle: &HashMap<String, bool>,
+    plugins: Option<&crate::plugins::PluginRegistry>,
+    allowed_subagent_types: Option<&[String]>,
+    additional: &[AgentDefinition],
+) -> Vec<SpecialistCatalogEntry> {
+    let grok = xai_grok_config::user_grok_home();
+    specialist_catalog_with_plugins_and_home(
+        cwd,
+        toggle,
+        plugins,
+        allowed_subagent_types,
+        dirs::home_dir().as_deref(),
+        grok.as_deref(),
+        additional,
+    )
+}
+
+fn specialist_catalog_with_plugins_and_home(
+    cwd: &Path,
+    toggle: &HashMap<String, bool>,
+    plugins: Option<&crate::plugins::PluginRegistry>,
+    allowed_subagent_types: Option<&[String]>,
     home: Option<&Path>,
     grok_home: Option<&Path>,
-) -> Vec<SubagentEntry> {
+    additional: &[AgentDefinition],
+) -> Vec<SpecialistCatalogEntry> {
     let discovered = discover_with_home(cwd, home, grok_home);
-    let mut entries = merge_subagents(discovered, toggle);
+    let mut entries = merge_subagent_candidates(discovered);
 
     // Append plugin agents under qualified names
     if let Some(registry) = plugins {
@@ -438,7 +576,50 @@ fn all_subagents_with_plugins_and_home(
         }
     }
 
+    // CLI definitions are session-scoped inputs rather than filesystem
+    // discovery.  Add them after native/plugin discovery so a configured
+    // profile cannot shadow a project, built-in, or plugin specialist that
+    // runtime lookup would resolve first.
+    for definition in additional {
+        if entries.iter().any(|entry| entry.name == definition.name) {
+            continue;
+        }
+        entries.push(SubagentEntry {
+            name: definition.name.clone(),
+            description: definition.description.clone(),
+            source: SubagentSource::UserDefined {
+                scope: definition.scope,
+            },
+            shadows_builtin: None,
+            config_source: source_from_agent_def(definition),
+        });
+    }
+
     entries
+        .into_iter()
+        .map(|entry| SpecialistCatalogEntry {
+            eligibility: eligibility_for(&entry.name, toggle, allowed_subagent_types),
+            entry,
+        })
+        .collect()
+}
+
+/// Testable home-aware form of [`all_subagents_with_plugins`].  Keep this
+/// narrow wrapper so existing discovery tests exercise the public eligible
+/// view while the canonical catalog remains the single implementation.
+#[cfg(test)]
+fn all_subagents_with_plugins_and_home(
+    cwd: &Path,
+    toggle: &HashMap<String, bool>,
+    plugins: Option<&crate::plugins::PluginRegistry>,
+    home: Option<&Path>,
+    grok_home: Option<&Path>,
+) -> Vec<SubagentEntry> {
+    specialist_catalog_with_plugins_and_home(cwd, toggle, plugins, None, home, grok_home, &[])
+        .into_iter()
+        .filter(|entry| entry.eligibility.is_eligible())
+        .map(|entry| entry.entry)
+        .collect()
 }
 
 /// Find an agent definition by name, with plugin support.
@@ -1457,6 +1638,99 @@ mod tests {
             "expected resolved root in: {qualified_body}"
         );
         assert!(!qualified_body.contains("${CLAUDE_PLUGIN_ROOT}"));
+    }
+
+    #[test]
+    fn specialist_catalog_retains_safe_ineligibility_reasons() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toggle = HashMap::from([("explore".to_string(), false)]);
+        let allowed = vec!["plan".to_string()];
+        let catalog = specialist_catalog_with_plugins_and_home(
+            tmp.path(),
+            &toggle,
+            None,
+            Some(&allowed),
+            None,
+            None,
+            &[],
+        );
+        let by_name = |name: &str| {
+            catalog
+                .iter()
+                .find(|candidate| candidate.entry.name == name)
+                .map(|candidate| candidate.eligibility)
+                .unwrap()
+        };
+        assert_eq!(
+            by_name("plan"),
+            SpecialistEligibility::Eligible,
+            "the allow-listed built-in remains callable"
+        );
+        assert_eq!(
+            by_name("explore"),
+            SpecialistEligibility::Disabled,
+            "toggle takes precedence and is displayable without config detail"
+        );
+        assert_eq!(
+            by_name("general-purpose"),
+            SpecialistEligibility::ParentRestricted,
+            "the catalog retains the parent restriction rather than silently hiding it"
+        );
+        assert_eq!(
+            SpecialistEligibility::ParentRestricted.catalog_label(),
+            "not allowed by parent"
+        );
+    }
+
+    #[test]
+    fn specialist_catalog_applies_parent_policy_to_cli_definitions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = synthetic_agent("cli-reviewer", "Review explicit input", AgentScope::BuiltIn);
+        let allowed = vec!["cli-reviewer".to_string()];
+        let catalog = specialist_catalog_with_plugins_and_home(
+            tmp.path(),
+            &HashMap::new(),
+            None,
+            Some(&allowed),
+            None,
+            None,
+            &[cli.clone()],
+        );
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|entry| entry.entry.name == "cli-reviewer")
+                .map(|entry| entry.eligibility),
+            Some(SpecialistEligibility::Eligible),
+            "an allow-listed CLI specialist is advertised through the canonical catalog"
+        );
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|entry| entry.entry.name == "plan")
+                .map(|entry| entry.eligibility),
+            Some(SpecialistEligibility::ParentRestricted),
+            "the same parent restriction applies to native specialists"
+        );
+
+        let disabled = HashMap::from([("cli-reviewer".to_string(), false)]);
+        let catalog = specialist_catalog_with_plugins_and_home(
+            tmp.path(),
+            &disabled,
+            None,
+            None,
+            None,
+            None,
+            &[cli],
+        );
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|entry| entry.entry.name == "cli-reviewer")
+                .map(|entry| entry.eligibility),
+            Some(SpecialistEligibility::Disabled),
+            "toggle policy is shared by CLI and filesystem-discovered specialists"
+        );
     }
 
     #[test]

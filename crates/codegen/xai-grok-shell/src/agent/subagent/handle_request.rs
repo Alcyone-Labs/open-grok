@@ -69,7 +69,7 @@ pub(crate) async fn handle_subagent_request(
         .then(|| crate::tools::tool_context::BlockingWaitGuard::enter(
             ctx.parent_blocking_wait_depth.clone(),
         ));
-    let Some(mut definition) = resolve_agent_definition(&request.subagent_type, &ctx)
+    let Some(mut definition) = resolve_specialist_definition(&request.subagent_type, &ctx)
     else {
         let msg = format!("Unknown subagent type: {}", request.subagent_type);
         send_pre_spawn_failure(request, &msg, coordinator, &ctx, gateway);
@@ -95,7 +95,7 @@ pub(crate) async fn handle_subagent_request(
         _ => {}
     }
     let run_in_background = request.run_in_background
-        || definition.background.unwrap_or(false);
+        || (!request.runtime_overrides.force_foreground && definition.background.unwrap_or(false));
     let cancel_token = CancellationToken::new();
     coordinator
         .borrow_mut()
@@ -1173,6 +1173,9 @@ pub(crate) async fn handle_subagent_request(
             resolved_tool_policy_override,
             true,
             subagent_session_default_agent_profile,
+            ctx.agent_config
+                .as_ref()
+                .map_or_else(Vec::new, |cfg| cfg.cli_agents.clone()),
             if inherit_skills {
                 ctx.parent_skills_config.clone()
             } else {

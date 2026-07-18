@@ -11,6 +11,9 @@ impl SessionActor {
             args_provided: action.args_provided(),
         });
         match action {
+            BuiltinAction::Specialist(invocation) => {
+                self.execute_specialist_command(invocation).await
+            }
             BuiltinAction::Compact { user_context } => {
                 self.run_compact(user_context).await?;
                 ok_end_turn(0, None)
@@ -897,6 +900,185 @@ impl SessionActor {
                 ok_end_turn(0, None)
             }
         }
+    }
+
+    /// Execute one explicitly requested specialist within the current parent
+    /// turn.  Validation goes through the coordinator so this command shares
+    /// the SPC-004 canonical catalog and policy gates with Task-tool spawns.
+    async fn execute_specialist_command(
+        self: &Arc<Self>,
+        invocation: Result<
+            crate::session::slash_commands::SpecialistInvocation,
+            crate::session::slash_commands::SpecialistInvocationParseError,
+        >,
+    ) -> PromptTurnResult {
+        use crate::session::slash_commands::SpecialistInvocationParseError;
+        use xai_grok_tools::implementations::grok_build::task::types::{
+            SubagentEvent, SubagentRequest, SubagentRuntimeOverrides, SubagentValidateTypeOutcome,
+            SubagentValidateTypeRequest,
+        };
+
+        let invocation = match invocation {
+            Ok(invocation) => invocation,
+            Err(SpecialistInvocationParseError::MissingName) => {
+                self.send_slash_command_output(
+                    "Usage: /specialist <name> <task> (missing specialist name)",
+                )
+                .await;
+                return ok_end_turn(0, None);
+            }
+            Err(SpecialistInvocationParseError::MissingTask { name }) => {
+                self.send_slash_command_output(&format!(
+                    "Usage: /specialist <name> <task> (missing task for '{name}')"
+                ))
+                .await;
+                return ok_end_turn(0, None);
+            }
+            Err(SpecialistInvocationParseError::MalformedName { name }) => {
+                self.send_slash_command_output(&format!(
+                    "Invalid specialist name '{name}'. Use an unqualified name or plugin:name."
+                ))
+                .await;
+                return ok_end_turn(0, None);
+            }
+        };
+
+        let Some(event_tx) = self.tool_context.subagent_event_tx.clone() else {
+            self.send_slash_command_output(
+                "Cannot start specialist: the subagent coordinator is unavailable. Retry shortly.",
+            )
+            .await;
+            return ok_end_turn(0, None);
+        };
+
+        let (respond_to, validation_rx) = tokio::sync::oneshot::channel();
+        if event_tx
+            .send(SubagentEvent::ValidateType(SubagentValidateTypeRequest {
+                subagent_type: invocation.name.clone(),
+                parent_session_id: self.session_info.id.0.to_string(),
+                respond_to,
+            }))
+            .is_err()
+        {
+            self.send_slash_command_output(
+                "Cannot validate specialist: the subagent coordinator is unavailable. Retry shortly.",
+            )
+            .await;
+            return ok_end_turn(0, None);
+        }
+
+        let validation = tokio::time::timeout(std::time::Duration::from_secs(5), validation_rx)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(SubagentValidateTypeOutcome::ValidationUnavailable);
+        let validation_error = match validation {
+            SubagentValidateTypeOutcome::Ok => None,
+            SubagentValidateTypeOutcome::Unknown { available } => {
+                let suffix = (!available.is_empty())
+                    .then(|| format!(" Available specialists: {}.", available.join(", ")))
+                    .unwrap_or_default();
+                Some(format!("Unknown specialist '{}'.{suffix}", invocation.name))
+            }
+            SubagentValidateTypeOutcome::Disabled => Some(format!(
+                "Specialist '{}' is disabled via [subagents.toggle] in config.toml.",
+                invocation.name
+            )),
+            SubagentValidateTypeOutcome::NotAllowed { allowed } => Some(format!(
+                "Specialist '{}' is not allowed by this parent. Allowed specialists: {}.",
+                invocation.name,
+                allowed.join(", ")
+            )),
+            SubagentValidateTypeOutcome::ValidationUnavailable => Some(format!(
+                "Cannot validate specialist '{}': the subagent coordinator is unavailable. Retry shortly.",
+                invocation.name
+            )),
+            _ => Some(format!(
+                "Cannot validate specialist '{}': unsupported validation response.",
+                invocation.name
+            )),
+        };
+        if let Some(message) = validation_error {
+            self.send_slash_command_output(&message).await;
+            return ok_end_turn(0, None);
+        }
+
+        let parent_prompt_id = self
+            .current_prompt_id
+            .lock()
+            .expect("current_prompt_id mutex poisoned")
+            .clone();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let request = SubagentRequest {
+            id: uuid::Uuid::now_v7().to_string(),
+            prompt: invocation.task.clone(),
+            description: invocation.task.clone(),
+            subagent_type: invocation.name.clone(),
+            parent_session_id: self.session_info.id.0.to_string(),
+            parent_prompt_id,
+            resume_from: None,
+            cwd: Some(self.session_info.cwd.clone()),
+            runtime_overrides: SubagentRuntimeOverrides {
+                force_foreground: true,
+                ..Default::default()
+            },
+            run_in_background: false,
+            // The explicit slash command owns the one parent-visible terminal
+            // summary below; do not also enqueue an idle completion reminder.
+            surface_completion: false,
+            fork_context: false,
+            result_tx,
+        };
+        if event_tx
+            .send(SubagentEvent::Spawn(Box::new(request)))
+            .is_err()
+        {
+            self.send_slash_command_output(
+                "Cannot start specialist: the subagent coordinator is unavailable. Retry shortly.",
+            )
+            .await;
+            return ok_end_turn(0, None);
+        }
+
+        match result_rx.await {
+            Ok(result) if result.success => {
+                self.send_slash_command_output(&format!(
+                    "Specialist '{}' completed:\n{}",
+                    invocation.name, result.output
+                ))
+                .await;
+            }
+            Ok(result) if result.cancelled => {
+                self.send_slash_command_output(&format!(
+                    "Specialist '{}' was cancelled.",
+                    invocation.name
+                ))
+                .await;
+            }
+            Ok(result) if result.backgrounded => {
+                self.send_slash_command_output(&format!(
+                    "Specialist '{}' could not remain foreground and was not accepted.",
+                    invocation.name
+                ))
+                .await;
+            }
+            Ok(result) => {
+                self.send_slash_command_output(&format!(
+                    "Specialist '{}' failed: {}",
+                    invocation.name,
+                    result.error.unwrap_or_else(|| "unknown error".to_string())
+                ))
+                .await;
+            }
+            Err(_) => {
+                self.send_slash_command_output(&format!(
+                    "Specialist '{}' ended before returning a result.",
+                    invocation.name
+                ))
+                .await;
+            }
+        }
+        ok_end_turn(0, None)
     }
 
     async fn execute_feedback_command(self: &Arc<Self>, text: String) -> PromptTurnResult {

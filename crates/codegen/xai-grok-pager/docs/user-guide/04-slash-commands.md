@@ -469,6 +469,22 @@ Open the agents modal to view and manage agent definitions, set the default agen
 
 Aliases: `/agents`
 
+### `/specialist <name> <task>`
+
+Run an eligible specialist as a **foreground** child task in the current
+session. Uses the same specialist catalog and policy gates as
+`spawn_subagent` (built-in subagent variants, discovered agents, plugins, and
+CLI additional agents). Primary-only profiles such as `grok-build` are not
+valid specialist names.
+
+```
+/specialist explore inspect the auth module
+/specialist plan outline the migration
+```
+
+The specialist may pin a model via agent markdown `model:` or
+`[subagents.models]`; see [16-subagents.md](16-subagents.md).
+
 ### `/personas`
 
 Manage personas -- create, edit, and delete personas. A subagent can apply a persona to shape its behavior.

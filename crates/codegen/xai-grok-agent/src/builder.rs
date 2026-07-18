@@ -101,6 +101,7 @@ pub struct AgentBuilder {
     subagents_enabled: bool,
     ask_user_question_enabled: bool,
     subagent_toggle: HashMap<String, bool>,
+    additional_subagents: Vec<AgentDefinition>,
     task_model_slugs: Vec<String>,
     skills_config: crate::prompt::skills::SkillsConfig,
     /// Resolved vendor-compat config governing which vendor (`.claude`/`.cursor`)
@@ -134,6 +135,69 @@ pub struct AgentBuilder {
     /// `list_skills_with_plugins()`.
     preloaded_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
 }
+
+/// Derive the parent agent's subagent allow-list from the existing `Agent`
+/// directives.  Kept independent of tool finalization so the same policy is
+/// available before Task's model-facing specialist catalog is rendered.
+fn derive_allowed_subagent_types(
+    tools: &[String],
+    disallowed_tools: &[String],
+) -> Option<Vec<String>> {
+    let mut saw_directive = false;
+    let mut types: Vec<String> = tools
+        .iter()
+        .filter_map(|tool| {
+            let captures = AGENT_TASK_CLASSIFIER_RE.captures(tool)?;
+            saw_directive = true;
+            captures.get(1)
+        })
+        .flat_map(|matched| matched.as_str().split(','))
+        .map(|name| name.trim().to_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    types.retain(|name| seen.insert(name.clone()));
+
+    let mut allowed = if !saw_directive && !tools.is_empty() {
+        Some(Vec::new())
+    } else if types.is_empty() {
+        None
+    } else {
+        Some(types)
+    };
+
+    let has_bare_deny = disallowed_tools.iter().any(|tool| {
+        AGENT_TASK_CLASSIFIER_RE
+            .captures(tool)
+            .is_some_and(|captures| {
+                captures
+                    .get(1)
+                    .is_none_or(|matched| matched.as_str().trim().is_empty())
+            })
+    });
+    if has_bare_deny {
+        return Some(Vec::new());
+    }
+
+    let denied: Vec<String> = disallowed_tools
+        .iter()
+        .filter_map(|tool| AGENT_TASK_CLASSIFIER_RE.captures(tool)?.get(1))
+        .flat_map(|matched| matched.as_str().split(','))
+        .map(|name| name.trim().to_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if !denied.is_empty()
+        && let Some(allowed_names) = &mut allowed
+    {
+        allowed_names.retain(|name| {
+            !denied
+                .iter()
+                .any(|denied| denied.eq_ignore_ascii_case(name))
+        });
+    }
+    allowed
+}
+
 /// Ensure plan mode tools (`enter_plan_mode`, `exit_plan_mode`,
 /// `ask_user_question`) are present in the tool config.
 fn ensure_plan_mode_tools(tool_config: &mut xai_grok_tools::registry::types::ToolServerConfig) {
@@ -225,6 +289,7 @@ impl AgentBuilder {
             subagents_enabled: false,
             ask_user_question_enabled: true,
             subagent_toggle: HashMap::new(),
+            additional_subagents: Vec::new(),
             task_model_slugs: Vec::new(),
             skills_config: Default::default(),
             compat: Default::default(),
@@ -560,6 +625,12 @@ impl AgentBuilder {
         self.subagent_toggle = toggle;
         self
     }
+    /// Add explicit session-provided specialist definitions (for example,
+    /// profiles supplied on the CLI) to the canonical Task catalog.
+    pub fn with_additional_subagents(mut self, definitions: Vec<AgentDefinition>) -> Self {
+        self.additional_subagents = definitions;
+        self
+    }
     /// Set the resolved vendor-compat config. Threaded into both startup
     /// discovery (`list_skills_with_plugins` / `read_agents_config_with_paths`)
     /// and the dynamic-discovery seeds (`SkillManager` / `AgentsMdTracker`).
@@ -775,10 +846,18 @@ impl AgentBuilder {
             tool_config.tools.retain(|tc| tc.id != task_tool_id);
             task_stripped = true;
         } else {
-            let subagents = crate::discovery::all_subagents_with_plugins(
+            // Resolve the parent allow-list before rendering Task.  The Task
+            // description is a permission-bearing catalog: advertising a type
+            // that this parent cannot spawn makes the model-facing and runtime
+            // contracts diverge.
+            definition.allowed_subagent_types =
+                derive_allowed_subagent_types(&definition.tools, &definition.disallowed_tools);
+            let subagents = crate::discovery::eligible_specialists_with_plugins_and_additional(
                 &self.working_directory,
                 &self.subagent_toggle,
                 self.plugin_registry.as_deref(),
+                definition.allowed_subagent_types.as_deref(),
+                &self.additional_subagents,
             );
             if subagents.is_empty() {
                 tool_config.tools.retain(|tc| tc.id != task_tool_id);
@@ -938,59 +1017,8 @@ impl AgentBuilder {
         tool_config
             .tools
             .retain(|tc| definition.session_tools_allowed(&tc.id));
-        {
-            let mut saw_directive = false;
-            let types: Vec<String> = definition
-                .tools
-                .iter()
-                .filter_map(|t| {
-                    let caps = AGENT_TASK_CLASSIFIER_RE.captures(t)?;
-                    saw_directive = true;
-                    caps.get(1)
-                })
-                .flat_map(|m| m.as_str().split(','))
-                .map(|s| s.trim().to_lowercase())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>();
-            let types = {
-                let mut seen = std::collections::HashSet::new();
-                types
-                    .into_iter()
-                    .filter(|t| seen.insert(t.clone()))
-                    .collect::<Vec<_>>()
-            };
-            definition.allowed_subagent_types = if !saw_directive && !definition.tools.is_empty() {
-                Some(vec![])
-            } else if types.is_empty() {
-                None
-            } else {
-                Some(types)
-            };
-        }
-        if !definition.disallowed_tools.is_empty() {
-            let has_bare_deny = definition.disallowed_tools.iter().any(|d| {
-                AGENT_TASK_CLASSIFIER_RE
-                    .captures(d)
-                    .is_some_and(|caps| caps.get(1).is_none_or(|m| m.as_str().trim().is_empty()))
-            });
-            if has_bare_deny {
-                definition.allowed_subagent_types = Some(vec![]);
-            } else {
-                let denied_types: Vec<String> = definition
-                    .disallowed_tools
-                    .iter()
-                    .filter_map(|d| AGENT_TASK_CLASSIFIER_RE.captures(d)?.get(1))
-                    .flat_map(|m| m.as_str().split(','))
-                    .map(|s| s.trim().to_lowercase())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if !denied_types.is_empty()
-                    && let Some(ref mut allowed) = definition.allowed_subagent_types
-                {
-                    allowed.retain(|t| !denied_types.iter().any(|d| d.eq_ignore_ascii_case(t)));
-                }
-            }
-        }
+        definition.allowed_subagent_types =
+            derive_allowed_subagent_types(&definition.tools, &definition.disallowed_tools);
         if definition.allowed_subagent_types.as_deref() == Some(&[]) {
             let task_deps = ["task", "get_task_output", "kill_task", "wait_tasks"];
             tool_config

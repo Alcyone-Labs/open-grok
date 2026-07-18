@@ -125,6 +125,7 @@ pub(crate) struct AgentRebuildSpec {
     pub write_file_enabled: bool,
     pub subagents_enabled: bool,
     pub subagent_toggle: HashMap<String, bool>,
+    pub additional_subagents: Vec<AgentDefinition>,
     pub ask_user_question_enabled: bool,
     pub persona_summaries: Vec<String>,
     pub prompt_audience: PromptAudience,
@@ -234,6 +235,7 @@ impl AgentRebuildSpec {
             write_file_enabled,
             subagents_enabled,
             subagent_toggle,
+            additional_subagents,
             ask_user_question_enabled,
             persona_summaries,
             prompt_audience,
@@ -292,6 +294,7 @@ impl AgentRebuildSpec {
         .with_fs(fs_backend.clone())
         .with_subagents_enabled(*subagents_enabled)
         .with_subagent_toggle(subagent_toggle.clone())
+        .with_additional_subagents(additional_subagents.clone())
         .with_task_model_slugs(
             models_manager
                 .available()
@@ -453,6 +456,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         write_file_enabled: true,
         subagents_enabled: false,
         subagent_toggle: HashMap::new(),
+        additional_subagents: vec![],
         ask_user_question_enabled: true,
         persona_summaries: vec![],
         prompt_audience: PromptAudience::Primary,
