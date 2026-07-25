@@ -11,7 +11,7 @@ Open Grok is a Rust monorepo. The product surface is the **`open-grok`** binary,
 | `crates/build/` | Build helpers (e.g. protobuf via `xai-proto-build`) |
 | `docs/` | Fork contracts, release notes, agent developer docs |
 | `bin/` | `open-grok-dev`, `setup-dev`, Dotslash `protoc` |
-| `scripts/` | Release packaging (`build-macos-release.sh`) |
+| `scripts/` | Release packaging (`build-macos-release.sh`, `build-windows-release.ps1`) |
 | `prod/mc/` | Deployment / managed-config types |
 | `third_party/` | Vendored Mermaid layout stack |
 | `dist/` | Local/CI release artifacts (not source of truth for version — use `OPEN_GROK_VERSION`) |

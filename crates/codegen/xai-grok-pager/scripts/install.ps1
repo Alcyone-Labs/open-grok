@@ -8,6 +8,7 @@
 #   OPENGROK_HOME               Runtime home (default: %USERPROFILE%\.opengrok)
 #   OPEN_GROK_BIN_DIR           Installation directory override
 #   OPEN_GROK_RELEASE_BASE_URL  Direct URL containing the release assets
+#   OPEN_GROK_NO_PATH_UPDATE    Set to 1 to leave the persistent User PATH unchanged
 
 param(
     [Parameter(Position = 0)]
@@ -33,14 +34,17 @@ if ($PSVersionTable.Platform -and $PSVersionTable.Platform -ne 'Win32NT') {
     exit 1
 }
 
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+$detectedArch = if ($env:PROCESSOR_ARCHITEW6432) {
+    $env:PROCESSOR_ARCHITEW6432
+} else {
+    $env:PROCESSOR_ARCHITECTURE
+}
+$arch = switch ($detectedArch) {
     'AMD64' { 'x86_64' }
-    'x86' { 'x86_64' }
-    'ARM64' { 'aarch64' }
     default { $null }
 }
 if (-not $arch) {
-    Write-Error "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE"
+    Write-Error "Open Grok currently publishes Windows x86_64 only; detected architecture: $detectedArch"
     exit 1
 }
 
@@ -107,17 +111,19 @@ try {
         }
     }
 
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $pathEntries = if ($userPath) {
-        $userPath -split ';' | Where-Object { $_ }
-    } else {
-        @()
-    }
-    if ($pathEntries -notcontains $binDir) {
-        [Environment]::SetEnvironmentVariable('Path', ((@($binDir) + $pathEntries) -join ';'), 'User')
-    }
-    if ($env:Path -notlike "*$binDir*") {
-        $env:Path = "$binDir;$env:Path"
+    if ($env:OPEN_GROK_NO_PATH_UPDATE -ne '1') {
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $pathEntries = if ($userPath) {
+            $userPath -split ';' | Where-Object { $_ }
+        } else {
+            @()
+        }
+        if ($pathEntries -notcontains $binDir) {
+            [Environment]::SetEnvironmentVariable('Path', ((@($binDir) + $pathEntries) -join ';'), 'User')
+        }
+        if ($env:Path -notlike "*$binDir*") {
+            $env:Path = "$binDir;$env:Path"
+        }
     }
 
     Write-Host "Installed Open Grok at $destination" -ForegroundColor Green

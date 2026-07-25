@@ -82,21 +82,29 @@ and config, providers, and development workflow).
 
 ## Install
 
-The initial binary release supports **Apple Silicon macOS only** (`arm64` /
-`aarch64`). Linux, Intel macOS, and Windows users should build from source for
-now.
+Prebuilt releases support **Apple Silicon macOS** (`arm64` / `aarch64`) and
+**64-bit Windows** (`x86_64`). Linux, Intel macOS, and Windows on Arm users
+should build from source for now.
+
+Apple Silicon macOS:
 
 ```sh
 curl -fsSL https://github.com/mweinbach/open-grok/releases/latest/download/install.sh | bash
 open-grok --version
 ```
 
-The installer downloads the raw `open-grok-macos-aarch64` artifact and its
-`.sha256` file, verifies SHA-256, runs a version smoke test, and atomically
-activates only `open-grok`. The managed command always lives at
-`${OPENGROK_HOME:-$HOME/.opengrok}/bin/open-grok`, which keeps manual installs
-and in-app updates on the same path. It does not create `grok` or `agent`
-aliases.
+64-bit Windows PowerShell:
+
+```powershell
+irm https://github.com/mweinbach/open-grok/releases/latest/download/install.ps1 | iex
+open-grok --version
+```
+
+Each installer downloads the platform artifact and its `.sha256` file, verifies
+SHA-256, and activates only `open-grok` (`open-grok.exe` on Windows). The
+managed command lives under `${OPENGROK_HOME:-$HOME/.opengrok}/bin/` on macOS
+or `%OPENGROK_HOME%\bin\` on Windows, which keeps manual installs and in-app
+updates on the same path. It does not create `grok` or `agent` aliases.
 
 By default, that managed `bin` directory is also added to `PATH`. Set
 `OPEN_GROK_BIN_DIR` to expose a symlink from another absolute directory while
@@ -117,8 +125,9 @@ curl -fsSL https://github.com/mweinbach/open-grok/releases/latest/download/insta
 ```
 
 For local installer testing, `OPEN_GROK_RELEASE_BASE_URL` may point directly to
-an asset base URL such as `http://127.0.0.1:8000` or `file:///tmp/release`
-containing `open-grok-macos-aarch64` and its `.sha256` file.
+an asset base URL such as `http://127.0.0.1:8000` containing the platform
+binary and its `.sha256` file. Windows automation may set
+`OPEN_GROK_NO_PATH_UPDATE=1` to leave the persistent User `PATH` unchanged.
 
 Release binaries are stripped and ad-hoc signed, but they are not Apple
 Developer ID signed or notarized. macOS may show an unidentified-developer or
@@ -262,6 +271,24 @@ The required version is ripgrep 15.0.0, matching the embedded-tool metadata.
 dist/open-grok-macos-aarch64
 dist/open-grok-macos-aarch64.sha256
 dist/install.sh
+dist/LICENSE
+dist/THIRD-PARTY-NOTICES
+```
+
+On 64-bit Windows, build the verified release asset set with:
+
+```powershell
+.\scripts\build-windows-release.ps1
+```
+
+The Windows builder uses `PROTOC` or `protoc.exe` from `PATH` when supplied.
+Otherwise it downloads the pinned official protoc 29.3 archive, verifies its
+SHA-256, and caches it under ignored `target/release-tools/`.
+
+```text
+dist/open-grok-windows-x86_64.exe
+dist/open-grok-windows-x86_64.exe.sha256
+dist/install.ps1
 dist/LICENSE
 dist/THIRD-PARTY-NOTICES
 ```

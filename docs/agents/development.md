@@ -156,6 +156,22 @@ Produces under `dist/`:
 
 Binaries are stripped and ad-hoc signed, **not** notarized.
 
+### Windows release build (x86_64)
+
+```powershell
+.\scripts\build-windows-release.ps1
+```
+
+Produces under `dist/`:
+
+- `open-grok-windows-x86_64.exe` + `.sha256`
+- `install.ps1`, `LICENSE`, `THIRD-PARTY-NOTICES`
+
+The builder prefers an explicit `PROTOC` or `protoc.exe` from `PATH`. When
+neither is available it downloads the pinned official protoc 29.3 Windows
+archive, verifies the archive digest, and caches it under
+`target/release-tools/`. Windows artifacts are not currently code signed.
+
 ## Contribution hygiene
 
 From `CONTRIBUTING.md` and fork practice:

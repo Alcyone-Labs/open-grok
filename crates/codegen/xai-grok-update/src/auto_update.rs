@@ -31,7 +31,7 @@ const MSG_RUN_UPDATE_MANUAL: &str = "Run `open-grok update` to get the latest ve
 /// Manual-install one-liner for this platform's bootstrap installer.
 fn manual_install_cmd() -> &'static str {
     if cfg!(windows) {
-        "Open Grok does not currently publish a Windows binary; build it from source"
+        "irm https://github.com/mweinbach/open-grok/releases/latest/download/install.ps1 | iex"
     } else {
         "curl -fsSL https://github.com/mweinbach/open-grok/releases/latest/download/install.sh | bash"
     }
@@ -792,12 +792,38 @@ pub async fn run_install_script(
 }
 
 const OPEN_GROK_MACOS_AARCH64_ASSET: &str = "open-grok-macos-aarch64";
+const OPEN_GROK_WINDOWS_X86_64_ASSET: &str = "open-grok-windows-x86_64.exe";
 
-fn open_grok_release_asset() -> Result<&'static str> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OpenGrokReleasePlatform {
+    asset: &'static str,
+    versioned_platform: &'static str,
+    binary_extension: &'static str,
+    display_name: &'static str,
+    managed_command: &'static str,
+}
+
+fn open_grok_release_platform() -> Result<OpenGrokReleasePlatform> {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Ok(OPEN_GROK_MACOS_AARCH64_ASSET)
+        Ok(OpenGrokReleasePlatform {
+            asset: OPEN_GROK_MACOS_AARCH64_ASSET,
+            versioned_platform: "macos-aarch64",
+            binary_extension: "",
+            display_name: "macOS Apple Silicon",
+            managed_command: "open-grok",
+        })
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Ok(OpenGrokReleasePlatform {
+            asset: OPEN_GROK_WINDOWS_X86_64_ASSET,
+            versioned_platform: "windows-x86_64",
+            binary_extension: ".exe",
+            display_name: "Windows x86_64",
+            managed_command: "open-grok.exe",
+        })
     } else {
-        anyhow::bail!("Open Grok currently publishes updates only for macOS on Apple Silicon")
+        anyhow::bail!(
+            "Open Grok currently publishes updates only for macOS on Apple Silicon and Windows x86_64"
+        )
     }
 }
 
@@ -971,7 +997,8 @@ pub async fn install_open_grok_release_from_base(
     release_base_url: &str,
 ) -> Result<()> {
     let version = normalize_release_version(target)?;
-    let asset = open_grok_release_asset()?;
+    let platform = open_grok_release_platform()?;
+    let asset = platform.asset;
     let base = release_base_url.trim_end_matches('/');
     let tag = format!("v{version}");
     let asset_url = format!("{base}/download/{tag}/{asset}");
@@ -982,7 +1009,10 @@ pub async fn install_open_grok_release_from_base(
     let bin_dir = home.join("bin");
     tokio::fs::create_dir_all(&download_dir).await?;
     tokio::fs::create_dir_all(&bin_dir).await?;
-    let versioned_name = format!("open-grok-{version}-macos-aarch64");
+    let versioned_name = format!(
+        "open-grok-{version}-{}{}",
+        platform.versioned_platform, platform.binary_extension
+    );
     let canonical_binary_path = download_dir.join(&versioned_name);
     // A forced same-version reinstall must not rename over the inode currently
     // targeted by the running managed command. On macOS, unlinking that signed
@@ -999,7 +1029,10 @@ pub async fn install_open_grok_release_from_base(
     };
     let checksum_path = unique_temp_sibling(&download_dir.join(&versioned_name), "sha256");
 
-    eprintln!("  Downloading Open Grok v{version} (macOS Apple Silicon)...");
+    eprintln!(
+        "  Downloading Open Grok v{version} ({})...",
+        platform.display_name
+    );
     download_with_progress(&asset_url, &binary_path).await?;
     if let Err(error) = download_silent(&checksum_url, &checksum_path).await {
         let _ = tokio::fs::remove_file(&binary_path).await;
@@ -1026,7 +1059,7 @@ pub async fn install_open_grok_release_from_base(
     };
     debug_assert_eq!(reported_version, version);
 
-    let managed = bin_dir.join("open-grok");
+    let managed = bin_dir.join(platform.managed_command);
     migrate_regular_open_grok_install(&managed, &bin_dir, &download_dir).await?;
     let link_path = swap_managed_bin_links(&binary_path, &bin_dir).await?;
     remove_stale_pager(&bin_dir).await;
@@ -3595,6 +3628,36 @@ mod tests {
     // ──────────────────────────────────────────────────────────────────────
     // reinstall_hint
     // ──────────────────────────────────────────────────────────────────────
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn test_open_grok_release_platform_selects_windows_executable() {
+        assert_eq!(
+            open_grok_release_platform().unwrap(),
+            OpenGrokReleasePlatform {
+                asset: "open-grok-windows-x86_64.exe",
+                versioned_platform: "windows-x86_64",
+                binary_extension: ".exe",
+                display_name: "Windows x86_64",
+                managed_command: "open-grok.exe",
+            }
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn test_open_grok_release_platform_selects_macos_executable() {
+        assert_eq!(
+            open_grok_release_platform().unwrap(),
+            OpenGrokReleasePlatform {
+                asset: "open-grok-macos-aarch64",
+                versioned_platform: "macos-aarch64",
+                binary_extension: "",
+                display_name: "macOS Apple Silicon",
+                managed_command: "open-grok",
+            }
+        );
+    }
 
     #[test]
     fn test_reinstall_hint_never_redirects_to_npm() {
