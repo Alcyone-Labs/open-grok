@@ -172,6 +172,15 @@ neither is available it downloads the pinned official protoc 29.3 Windows
 archive, verifies the archive digest, and caches it under
 `target/release-tools/`. Windows artifacts are not currently code signed.
 
+### Full GitHub publication
+
+After tests pass, commit the version/release note and create the matching tag
+on that exact commit. Dispatch [`.github/workflows/release.yml`](../../.github/workflows/release.yml)
+with the existing tag. It checks out the tagged source independently on
+Windows x86_64 and Apple Silicon macOS, builds and verifies both asset sets,
+publishes one full GitHub Release, re-downloads the public bytes, and verifies
+the tag is Latest.
+
 ## Contribution hygiene
 
 From `CONTRIBUTING.md` and fork practice:

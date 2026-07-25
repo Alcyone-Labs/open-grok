@@ -1,0 +1,171 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing Open Grok release tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x86_64
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify tag and version
+        shell: pwsh
+        run: |
+          $version = (Get-Content OPEN_GROK_VERSION -TotalCount 1).Trim()
+          if ("v$version" -ne '${{ inputs.tag }}') {
+            throw "Tag/version mismatch: tag=${{ inputs.tag }} version=$version"
+          }
+          if (-not (git tag --points-at HEAD | Where-Object { $_ -eq '${{ inputs.tag }}' })) {
+            throw 'Checked-out commit is not anchored by the requested tag.'
+          }
+
+      - name: Build and verify Windows release
+        shell: pwsh
+        run: .\scripts\build-windows-release.ps1
+
+      - name: Upload Windows assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          if-no-files-found: error
+          path: |
+            dist/open-grok-windows-x86_64.exe
+            dist/open-grok-windows-x86_64.exe.sha256
+            dist/install.ps1
+
+  macos:
+    name: macOS Apple Silicon
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify tag and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < OPEN_GROK_VERSION)"
+          test "v${version}" = '${{ inputs.tag }}'
+          git tag --points-at HEAD | grep -Fx '${{ inputs.tag }}'
+
+      - name: Install pinned ripgrep
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/ripgrep-15.0.0-aarch64-apple-darwin.tar.gz"
+          curl -fL \
+            https://github.com/BurntSushi/ripgrep/releases/download/15.0.0/ripgrep-15.0.0-aarch64-apple-darwin.tar.gz \
+            -o "$archive"
+          printf '%s  %s\n' \
+            98bb2e61e7277ba0ea72d2ae2592497fd8d2940934a16b122448d302a6637e3b \
+            "$archive" | shasum -a 256 -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "GROK_TOOLS_BUNDLE_RG_PATH=$RUNNER_TEMP/ripgrep-15.0.0-aarch64-apple-darwin/rg" \
+            >> "$GITHUB_ENV"
+
+      - name: Build and verify macOS release
+        shell: bash
+        run: ./scripts/build-macos-release.sh
+
+      - name: Smoke macOS installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_root="$(mktemp -d)"
+          trap 'rm -rf "$smoke_root"' EXIT
+          export OPENGROK_HOME="$smoke_root/home"
+          export OPEN_GROK_BIN_DIR="$smoke_root/bin"
+          export OPEN_GROK_RELEASE_BASE_URL="file://$PWD/dist"
+          bash dist/install.sh '${{ inputs.tag }}'
+          "$smoke_root/bin/open-grok" --version | grep -F "$(cat OPEN_GROK_VERSION)"
+          "$smoke_root/bin/open-grok" --version | grep -F "$(git rev-parse --short HEAD)"
+
+      - name: Upload macOS and common assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          if-no-files-found: error
+          path: |
+            dist/open-grok-macos-aarch64
+            dist/open-grok-macos-aarch64.sha256
+            dist/install.sh
+            dist/LICENSE
+            dist/THIRD-PARTY-NOTICES
+
+  publish:
+    name: Publish and verify GitHub release
+    needs: [windows, macos]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish exact assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag }}"
+          version="${version#v}"
+          notes="docs/releases/v${version}.md"
+          test -f "$notes"
+          if gh release view '${{ inputs.tag }}' --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload '${{ inputs.tag }}' release-assets/* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit '${{ inputs.tag }}' \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Open Grok v${version}" \
+              --notes-file "$notes" \
+              --latest
+          else
+            gh release create '${{ inputs.tag }}' release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "Open Grok v${version}" \
+              --notes-file "$notes" \
+              --latest
+          fi
+
+      - name: Re-download and compare public assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir public-assets
+          gh release download '${{ inputs.tag }}' \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir public-assets
+          for local_asset in release-assets/*; do
+            name="$(basename "$local_asset")"
+            cmp "$local_asset" "public-assets/$name"
+          done
+          latest_tag="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name
+          )"
+          test "$latest_tag" = '${{ inputs.tag }}'

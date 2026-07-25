@@ -159,7 +159,7 @@ After any non-xAI profile that denies xAI services, the session export boundary 
 | Build or change this checkout | [`develop-open-grok`](.agents/skills/develop-open-grok/SKILL.md) |
 | Add/change provider, model, auth, or wire behavior | [`change-open-grok-provider`](.agents/skills/change-open-grok-provider/SKILL.md) |
 | Prove compaction, resume, or subagent persistence | [`verify-open-grok-session`](.agents/skills/verify-open-grok-session/SKILL.md) |
-| Build and publish a macOS release | [`release-open-grok`](.agents/skills/release-open-grok/SKILL.md) |
+| Build and publish a release | [`release-open-grok`](.agents/skills/release-open-grok/SKILL.md) |
 | Compare or replay an upstream snapshot | [`sync-open-grok-upstream`](.agents/skills/sync-open-grok-upstream/SKILL.md) |
 
 ### 5.2 While coding
@@ -197,7 +197,7 @@ Interpret failures before broadening the patch: the Rust workspace has long comp
 | Provider/model/auth | Registry/request/stream coverage passes; credentials, caches, hosted tools, opaque history, 401 refresh, logout, auxiliary routing, and export boundaries stay provider-local; live model/provider switches rebind before sends resume. |
 | Code Mode | Model metadata controls effective mode; raw-JS `exec`, persistent V8, nested tool dispatch, permissions, and TUI suppression/rendering all stay aligned. |
 | Session/compaction | The exact session id is found on disk; `summary.json`, `updates.jsonl`/`events.jsonl`, child `subagents/`, and referenced checkpoints agree. For auto-compaction, prove `auto_compact_started` → checkpoint persistence → `auto_compact_completed`. |
-| Release | A clean exact commit produces a version/commit-verified arm64 binary; signature and checksum pass; the canonical five assets are published; GitHub digests match; latest/tag-specific installer smoke and the managed installed binary report the expected version. |
+| Release | A clean exact commit produces version/commit-verified binaries for every published platform; signature/checksum checks pass; the complete asset set is published; GitHub bytes match; latest/tag-specific installer smoke and the managed installed binary report the expected version. |
 | Upstream sync | Merge-base state is checked first; imports are replayed in reviewable batches; fork naming, paths, updater, provider/auth, Code Mode, and security contracts survive; baseline and focused tests are recorded. |
 
 ### 5.5 PR / change hygiene
@@ -226,6 +226,12 @@ cargo build --locked -p xai-grok-pager-bin --bin open-grok
 ```
 
 Release (Apple Silicon, clean tree): `./scripts/build-macos-release.sh` reads `OPEN_GROK_VERSION`. The builder requires the pinned arm64 `ripgrep 15.0.0` through `GROK_TOOLS_BUNDLE_RG_PATH`; do not substitute a newer Homebrew binary. Use [`release-open-grok`](.agents/skills/release-open-grok/SKILL.md) for the publication and installer-verification sequence.
+
+Release (Windows x86_64, clean tree):
+`.\scripts\build-windows-release.ps1` reads `OPEN_GROK_VERSION`, verifies or
+bootstraps pinned `protoc` 29.3, and packages the `.exe`, checksum, and
+`install.ps1`. The full GitHub release workflow builds both supported
+platforms from the existing version tag.
 
 ---
 
