@@ -127,6 +127,24 @@ jobs:
           echo "GROK_TOOLS_BUNDLE_RG_PATH=$RUNNER_TEMP/ripgrep-15.0.0-aarch64-apple-darwin/rg" \
             >> "$GITHUB_ENV"
 
+      - name: Install pinned protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/protoc-29.3-osx-aarch_64.zip"
+          protoc_root="$RUNNER_TEMP/protoc-29.3"
+          curl -fL \
+            https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-osx-aarch_64.zip \
+            -o "$archive"
+          mkdir -p "$protoc_root"
+          unzip -q "$archive" -d "$protoc_root"
+          protoc="$protoc_root/bin/protoc"
+          printf '%s  %s\n' \
+            2b8a3403cd097f95f3ba656e14b76c732b6b26d7f183330b11e36ef2bc028765 \
+            "$protoc" | shasum -a 256 -c -
+          test "$("$protoc" --version)" = "libprotoc 29.3"
+          echo "PROTOC=$protoc" >> "$GITHUB_ENV"
+
       - name: Build and verify macOS release
         shell: bash
         run: ./scripts/build-macos-release.sh
