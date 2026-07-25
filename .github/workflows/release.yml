@@ -1,6 +1,10 @@
 name: Publish release
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/release-target
   workflow_dispatch:
     inputs:
       tag:
@@ -12,27 +16,67 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ inputs.tag || github.sha }}
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Resolve and anchor release target
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.target.outputs.tag }}
+      sha: ${{ steps.target.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target and create missing tag
+        id: target
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            tag="$REQUESTED_TAG"
+            sha="$(git rev-list -n 1 "$tag")"
+          else
+            read -r tag sha < .github/release-target
+          fi
+          test -n "$tag"
+          test -n "$sha"
+          version="${tag#v}"
+          target_version="$(git show "${sha}:OPEN_GROK_VERSION" | tr -d '\r\n')"
+          test "$version" = "$target_version"
+          resolved_sha="$(git rev-parse "${sha}^{commit}")"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            test "$(git rev-list -n 1 "$tag")" = "$resolved_sha"
+          else
+            git tag "$tag" "$resolved_sha"
+            git push origin "refs/tags/$tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$resolved_sha" >> "$GITHUB_OUTPUT"
+
   windows:
     name: Windows x86_64
+    needs: resolve
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.resolve.outputs.tag }}
           fetch-depth: 0
 
       - name: Verify tag and version
         shell: pwsh
         run: |
           $version = (Get-Content OPEN_GROK_VERSION -TotalCount 1).Trim()
-          if ("v$version" -ne '${{ inputs.tag }}') {
-            throw "Tag/version mismatch: tag=${{ inputs.tag }} version=$version"
+          if ("v$version" -ne '${{ needs.resolve.outputs.tag }}') {
+            throw "Tag/version mismatch: tag=${{ needs.resolve.outputs.tag }} version=$version"
           }
-          if (-not (git tag --points-at HEAD | Where-Object { $_ -eq '${{ inputs.tag }}' })) {
+          if (-not (git tag --points-at HEAD | Where-Object { $_ -eq '${{ needs.resolve.outputs.tag }}' })) {
             throw 'Checked-out commit is not anchored by the requested tag.'
           }
 
@@ -52,11 +96,12 @@ jobs:
 
   macos:
     name: macOS Apple Silicon
+    needs: resolve
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.resolve.outputs.tag }}
           fetch-depth: 0
 
       - name: Verify tag and version
@@ -64,8 +109,8 @@ jobs:
         run: |
           set -euo pipefail
           version="$(tr -d '\r\n' < OPEN_GROK_VERSION)"
-          test "v${version}" = '${{ inputs.tag }}'
-          git tag --points-at HEAD | grep -Fx '${{ inputs.tag }}'
+          test "v${version}" = '${{ needs.resolve.outputs.tag }}'
+          git tag --points-at HEAD | grep -Fx '${{ needs.resolve.outputs.tag }}'
 
       - name: Install pinned ripgrep
         shell: bash
@@ -95,7 +140,7 @@ jobs:
           export OPENGROK_HOME="$smoke_root/home"
           export OPEN_GROK_BIN_DIR="$smoke_root/bin"
           export OPEN_GROK_RELEASE_BASE_URL="file://$PWD/dist"
-          bash dist/install.sh '${{ inputs.tag }}'
+          bash dist/install.sh '${{ needs.resolve.outputs.tag }}'
           "$smoke_root/bin/open-grok" --version | grep -F "$(cat OPEN_GROK_VERSION)"
           "$smoke_root/bin/open-grok" --version | grep -F "$(git rev-parse --short HEAD)"
 
@@ -113,14 +158,14 @@ jobs:
 
   publish:
     name: Publish and verify GitHub release
-    needs: [windows, macos]
+    needs: [resolve, windows, macos]
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.resolve.outputs.tag }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@v4
@@ -132,20 +177,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${{ inputs.tag }}"
+          version="${{ needs.resolve.outputs.tag }}"
           version="${version#v}"
           notes="docs/releases/v${version}.md"
           test -f "$notes"
-          if gh release view '${{ inputs.tag }}' --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload '${{ inputs.tag }}' release-assets/* \
+          if gh release view '${{ needs.resolve.outputs.tag }}' --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload '${{ needs.resolve.outputs.tag }}' release-assets/* \
               --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit '${{ inputs.tag }}' \
+            gh release edit '${{ needs.resolve.outputs.tag }}' \
               --repo "$GITHUB_REPOSITORY" \
               --title "Open Grok v${version}" \
               --notes-file "$notes" \
               --latest
           else
-            gh release create '${{ inputs.tag }}' release-assets/* \
+            gh release create '${{ needs.resolve.outputs.tag }}' release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "Open Grok v${version}" \
@@ -158,7 +203,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir public-assets
-          gh release download '${{ inputs.tag }}' \
+          gh release download '${{ needs.resolve.outputs.tag }}' \
             --repo "$GITHUB_REPOSITORY" \
             --dir public-assets
           for local_asset in release-assets/*; do
@@ -168,4 +213,4 @@ jobs:
           latest_tag="$(
             gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name
           )"
-          test "$latest_tag" = '${{ inputs.tag }}'
+          test "$latest_tag" = '${{ needs.resolve.outputs.tag }}'
