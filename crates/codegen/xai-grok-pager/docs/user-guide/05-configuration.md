@@ -293,10 +293,11 @@ context_window = 353000
 back to or modifies the xAI account in `~/.opengrok/auth.json`. Explicit `api_key`
 or `env_key` values on that model still take precedence over OAuth.
 
-Kimi coding models are API-key-only. The Settings UI can save the key under a
-provider-scoped credential and query the live Kimi model catalog. For an
-environment/config-only setup, use the explicit Kimi provider and Chat
-Completions endpoint:
+Kimi coding models are API-key-only. Platform and Code keep separate
+credentials and catalogs: Platform (`kimi-k3`, `MOONSHOT_API_KEY`) vs Code
+(`k3`, `k3-256k`, `kimi-for-coding*`, `KIMI_CODE_API_KEY`). The Settings UI
+saves the matching provider-scoped credential and refreshes that service's
+catalog. For an environment/config-only setup:
 
 ```toml
 [model.kimi-k3]
@@ -306,6 +307,15 @@ provider = "kimi"
 base_url = "https://api.moonshot.ai/v1"
 api_backend = "chat_completions"
 env_key = "MOONSHOT_API_KEY"
+context_window = 1048576
+
+[model.k3]
+model = "k3"
+name = "Kimi K3"
+provider = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+api_backend = "chat_completions"
+env_key = "KIMI_CODE_API_KEY"
 context_window = 1048576
 ```
 

@@ -332,6 +332,65 @@ fn kimi_endpoint_update_maps_platform_session_to_code_catalog_model() {
 }
 
 #[test]
+fn kimi_endpoint_update_prefers_code_k3_over_k2_7_coding_models() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    let platform_id = acp::ModelId::new("kimi-k3");
+    let code_k3 = acp::ModelId::new("k3");
+    let code_k3_256k = acp::ModelId::new("k3-256k");
+    let code_k27 = acp::ModelId::new("kimi-for-coding");
+    let fallback_id = acp::ModelId::new("grok-4.5");
+    {
+        let models = &mut app.agents[&agent_id].session.models;
+        models.available.insert(
+            platform_id.clone(),
+            provider_model_info(&platform_id, "Kimi K3", "kimi"),
+        );
+        models.current = Some(platform_id);
+    }
+    prepare_kimi_rebind(
+        &mut app,
+        agent_id,
+        xai_grok_shell::kimi_models::KimiApiEndpoint::Code,
+        1,
+    );
+    let refreshed = acp::SessionModelState::new(
+        fallback_id.clone(),
+        vec![
+            provider_model_info(&fallback_id, "Grok 4.5", "xai"),
+            provider_model_info(&code_k27, "Kimi for Coding", "kimi"),
+            provider_model_info(&code_k3_256k, "Kimi K3 256K", "kimi"),
+            provider_model_info(&code_k3, "Kimi K3", "kimi"),
+        ],
+    );
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::KimiApiEndpointUpdated {
+            endpoint: xai_grok_shell::kimi_models::KimiApiEndpoint::Code,
+            effective_endpoint: xai_grok_shell::kimi_models::KimiApiEndpoint::Code,
+            previous: xai_grok_shell::kimi_models::KimiApiEndpoint::Platform,
+            generation: 1,
+            stale: false,
+            credential_configured: true,
+            warning: None,
+            error: None,
+            models: Some(refreshed),
+        }),
+        &mut app,
+    );
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RebindKimiModel {
+            agent_id: effect_agent,
+            model_id: effect_model,
+            effort: None,
+            ..
+        }] if *effect_agent == agent_id && effect_model == &code_k3
+    ));
+}
+
+#[test]
 fn kimi_endpoint_without_credential_keeps_loaded_session_fail_closed() {
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);

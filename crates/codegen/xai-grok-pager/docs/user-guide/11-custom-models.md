@@ -197,13 +197,21 @@ When you override a built-in model, Grok starts with the default configuration (
 
 ### Kimi coding models
 
-Open **Settings → Models → Kimi API key** and paste a Kimi Platform API key.
-Grok stores only the provider-scoped credential, queries Kimi's `/v1/models`
-endpoint, and refreshes the model picker. `MOONSHOT_API_KEY` remains available
-as an environment override. The built-in `kimi-k3` entry works without a model
-config block.
+Kimi has two isolated services. Open **Settings → Models → Kimi service** to
+choose Platform or Code, then paste the matching API key. Open Grok stores each
+credential separately, queries that service's `/models` endpoint when possible,
+and refreshes the model picker. Environment overrides remain available:
+`MOONSHOT_API_KEY` for Platform and `KIMI_CODE_API_KEY` for Code.
 
-For an explicit config-only setup:
+| Service | Built-in models | Base URL | Credential |
+| --- | --- | --- | --- |
+| Platform | `kimi-k3` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
+| Code | `k3`, `k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed` | `https://api.kimi.com/coding/v1` | `KIMI_CODE_API_KEY` |
+
+Code `k3` is not the same slug as Platform `kimi-k3`. The membership API uses
+`k3` / `k3-256k`; the pay-as-you-go Platform API uses `kimi-k3`.
+
+For an explicit config-only Platform setup:
 
 ```toml
 [model.kimi-k3]
@@ -216,7 +224,20 @@ env_key = "MOONSHOT_API_KEY"
 context_window = 1048576
 ```
 
-Kimi uses standard client-side function tools. Grok does not add
+For Kimi Code membership models:
+
+```toml
+[model.k3]
+model = "k3"
+name = "Kimi K3"
+provider = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+api_backend = "chat_completions"
+env_key = "KIMI_CODE_API_KEY"
+context_window = 1048576
+```
+
+Kimi uses standard client-side function tools. Open Grok does not add
 Kimi-platform-hosted tools to this provider profile.
 
 ### Anthropic (Claude)

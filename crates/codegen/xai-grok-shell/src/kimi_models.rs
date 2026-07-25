@@ -122,6 +122,15 @@ pub fn environment_api_key_is_configured(endpoint: KimiApiEndpoint) -> bool {
     environment_api_key(endpoint).is_some()
 }
 
+/// Whether `model_id` is a Kimi Code membership API slug (not Platform).
+///
+/// Platform uses `kimi-k3` on Moonshot; Code uses `k3` / `k3-256k` plus the
+/// K2.7 coding family. Keep this slug-based for ACP rebind paths that only see
+/// model ids after the service partition is already selected.
+pub fn is_code_model_slug(model_id: &str) -> bool {
+    matches!(model_id, "k3" | "k3-256k") || model_id.starts_with("kimi-for-coding")
+}
+
 fn stored_api_key(endpoint: KimiApiEndpoint) -> Option<String> {
     crate::auth::read_kimi_api_key(&crate::util::grok_home::grok_home(), endpoint)
 }
@@ -220,7 +229,10 @@ impl KimiModelsClient {
     }
 
     pub(crate) fn supports_models_query(&self) -> bool {
-        self.endpoint == KimiApiEndpoint::Platform
+        // Platform and Code both expose OpenAI-compatible `/models`. Live
+        // discovery is optional enrichment over the embedded partition; query
+        // failures keep the offline catalog for the selected service.
+        true
     }
 
     pub(crate) fn catalog_matches_current_credential(&self, catalog: &KimiModelsCatalog) -> bool {
@@ -475,11 +487,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn code_catalog_never_depends_on_models_endpoint() {
+    async fn code_catalog_query_skips_without_usable_key() {
         let client =
             KimiModelsClient::with_base_url("http://127.0.0.1:1/coding/v1", KimiApiEndpoint::Code);
-        assert!(!client.supports_models_query());
-        assert!(client.query().await.unwrap().is_none());
+        assert!(client.supports_models_query());
+        assert!(
+            client.query().await.unwrap().is_none(),
+            "without a Code credential the live query must not attempt the network"
+        );
+    }
+
+    #[test]
+    fn code_model_slug_classifier_covers_k3_and_k2_7_coding_family() {
+        assert!(is_code_model_slug("k3"));
+        assert!(is_code_model_slug("k3-256k"));
+        assert!(is_code_model_slug("kimi-for-coding"));
+        assert!(is_code_model_slug("kimi-for-coding-highspeed"));
+        assert!(!is_code_model_slug("kimi-k3"));
+        assert!(!is_code_model_slug("grok-4.5"));
     }
 
     #[test]

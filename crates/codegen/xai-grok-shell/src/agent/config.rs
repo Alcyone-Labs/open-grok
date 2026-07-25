@@ -3812,15 +3812,14 @@ pub fn resolve_model_list_with_provider_catalogs(
         ModelProvider::Codex,
         codex_authoritative,
     );
-    let kimi_live_discovery_enabled =
-        crate::kimi_models::effective_endpoint(cfg.models.kimi_endpoint)
-            == crate::kimi_models::KimiApiEndpoint::Platform;
+    // Platform and Code each own a non-overlapping embedded partition; live
+    // `/models` results may replace only the selected service's catalog.
     merge_remote_provider_partition(
         &mut resolved,
         &defaults,
-        kimi_live_discovery_enabled.then_some(kimi_remote).flatten(),
+        kimi_remote,
         ModelProvider::Kimi,
-        kimi_live_discovery_enabled && kimi_authoritative,
+        kimi_authoritative,
     );
     merge_remote_provider_partition(
         &mut resolved,
@@ -13731,19 +13730,25 @@ default = "grok-4.5"
             entry.env_key.as_ref().and_then(EnvKeys::primary),
             Some(crate::kimi_models::KIMI_API_KEY_ENV)
         );
+        assert!(!defaults.contains_key("k3"));
+        assert!(!defaults.contains_key("k3-256k"));
         assert!(!defaults.contains_key("kimi-for-coding"));
         assert!(!defaults.contains_key("kimi-for-coding-highspeed"));
     }
 
     #[test]
     fn embedded_kimi_code_catalog_is_selected_as_one_isolated_partition() {
-        let defaults = default_model_entries_for_kimi_endpoint(
-            &EndpointsConfig::default(),
-            crate::kimi_models::KimiApiEndpoint::Code,
-        );
+        let mut cfg = Config::default();
+        cfg.models.kimi_endpoint = crate::kimi_models::KimiApiEndpoint::Code;
+        let defaults = resolve_model_list(&cfg, None);
 
         assert!(!defaults.contains_key("kimi-k3"));
-        for slug in ["kimi-for-coding", "kimi-for-coding-highspeed"] {
+        for (slug, context_window) in [
+            ("k3", 1_048_576u64),
+            ("k3-256k", 262_144),
+            ("kimi-for-coding", 262_144),
+            ("kimi-for-coding-highspeed", 262_144),
+        ] {
             let entry = defaults.get(slug).expect("embedded Kimi Code model");
             assert_eq!(entry.info.provider, ModelProvider::Kimi);
             assert_eq!(entry.info.api_backend, ApiBackend::ChatCompletions);
@@ -13751,13 +13756,17 @@ default = "grok-4.5"
                 entry.info.base_url,
                 crate::kimi_models::KIMI_CODE_API_BASE_URL
             );
-            assert_eq!(entry.info.context_window.get(), 262_144);
+            assert_eq!(entry.info.context_window.get(), context_window);
             assert_eq!(entry.info.tool_mode, Some(ToolMode::Direct));
             assert_eq!(
                 entry.env_key.as_ref().and_then(EnvKeys::primary),
                 Some(crate::kimi_models::KIMI_CODE_API_KEY_ENV)
             );
         }
+        let k3 = defaults.get("k3").expect("embedded Code K3");
+        assert!(k3.info.supports_reasoning_effort);
+        assert_eq!(k3.info.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(k3.info.reasoning_efforts.len(), 3);
     }
 
     #[test]

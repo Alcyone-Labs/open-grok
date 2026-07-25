@@ -102,6 +102,8 @@ Also isolated:
 3. **Bearer + account headers are one snapshot** — account drift mid-session fails closed.
 4. **401 refresh paths are provider-local** — never refresh or mutate the other store.
 5. **Kimi Platform vs Code** keys, catalogs, and trusted hosts are non-interchangeable.
+   Platform embeds/discovers `kimi-k3` on Moonshot; Code embeds/discovers `k3`,
+   `k3-256k`, and the `kimi-for-coding*` family on `api.kimi.com/coding/v1`.
 6. **xAI-only services** (relay, some uploads, etc.) close via monotonic export boundary after non-xAI denied profiles. Compatibility field name remains `ever_used_codex` even when the triggering provider is not Codex; subagents mark the parent tree.
 7. **xAI media / Imagine** must not receive Codex bearer; hide media tools while Codex is active.
 8. **Hosted search** is dialect-scoped: xAI web/X search vs OpenAI `web_search`. The optional Perplexity raw-search fallback is declared only for profiles whose `native_web_search` capability is false, currently Kimi. Never infer this from model names or URLs.

@@ -273,28 +273,45 @@ fn pending_kimi_model(
         let id = acp::ModelId::new(slug);
         (models.available.contains_key(&id) && is_kimi(&id)).then_some(id)
     };
-    let code = models
-        .current
-        .clone()
-        .filter(|id| is_kimi(id) && id.0.as_ref().starts_with("kimi-for-coding"))
-        .or_else(|| exact("kimi-for-coding"))
-        .or_else(|| exact("kimi-for-coding-highspeed"));
-    let platform = models
-        .current
-        .clone()
-        .filter(|id| is_kimi(id) && !id.0.as_ref().starts_with("kimi-for-coding"))
-        .or_else(|| exact("kimi-k3"))
+    let is_code_slug =
+        |id: &acp::ModelId| xai_grok_shell::kimi_models::is_code_model_slug(id.0.as_ref());
+    // Prefer keeping the session on a same-service Kimi model. Fall back to the
+    // service's preferred embedded slugs, then any remaining Kimi entry in the
+    // rebuilt partition (Platform and Code catalogs do not share slugs).
+    let preferred: &[&str] = match endpoint {
+        xai_grok_shell::kimi_models::KimiApiEndpoint::Code => &[
+            "k3",
+            "k3-256k",
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+        ],
+        xai_grok_shell::kimi_models::KimiApiEndpoint::Platform => &["kimi-k3"],
+    };
+    let keep_current = models.current.clone().filter(|id| {
+        is_kimi(id)
+            && models.available.contains_key(id)
+            && match endpoint {
+                xai_grok_shell::kimi_models::KimiApiEndpoint::Code => is_code_slug(id),
+                xai_grok_shell::kimi_models::KimiApiEndpoint::Platform => !is_code_slug(id),
+            }
+    });
+    keep_current
+        .or_else(|| preferred.iter().find_map(|slug| exact(slug)))
         .or_else(|| {
             models
                 .available
                 .keys()
-                .find(|id| is_kimi(id) && !id.0.as_ref().starts_with("kimi-for-coding"))
+                .find(|id| {
+                    is_kimi(id)
+                        && match endpoint {
+                            xai_grok_shell::kimi_models::KimiApiEndpoint::Code => is_code_slug(id),
+                            xai_grok_shell::kimi_models::KimiApiEndpoint::Platform => {
+                                !is_code_slug(id)
+                            }
+                        }
+                })
                 .cloned()
-        });
-    match endpoint {
-        xai_grok_shell::kimi_models::KimiApiEndpoint::Code => code,
-        xai_grok_shell::kimi_models::KimiApiEndpoint::Platform => platform,
-    }
+        })
 }
 
 fn rebind_pending_kimi_sessions(

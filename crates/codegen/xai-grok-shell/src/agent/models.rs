@@ -635,9 +635,9 @@ impl ModelsManager {
     }
 
     /// Apply a Kimi service selection to the resident model manager. The
-    /// embedded partition is rebuilt synchronously; Platform then attempts a
-    /// live `/models` refresh, while Code deliberately keeps its embedded
-    /// two-model catalog without depending on that endpoint.
+    /// embedded partition is rebuilt synchronously, then both Platform and
+    /// Code attempt a live `/models` refresh when a usable key is present.
+    /// Failures keep the service-local embedded catalog.
     pub async fn apply_kimi_endpoint(&self, endpoint: KimiApiEndpoint) -> anyhow::Result<bool> {
         let mut cfg = self.inner.cfg.read().clone();
         cfg.models.kimi_endpoint = endpoint;
@@ -2898,13 +2898,27 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!refreshed, "Kimi Code must not depend on /models");
+        assert!(
+            !refreshed,
+            "without a Code key, live /models is skipped and the embedded partition remains"
+        );
         assert_eq!(mgr.kimi_endpoint(), KimiApiEndpoint::Code);
         assert_eq!(mgr.effective_kimi_endpoint(), KimiApiEndpoint::Code);
         let models = mgr.models();
+        assert!(models.contains_key("k3"));
+        assert!(models.contains_key("k3-256k"));
         assert!(models.contains_key("kimi-for-coding"));
         assert!(models.contains_key("kimi-for-coding-highspeed"));
         assert!(!models.contains_key("kimi-k3"));
+        assert_eq!(
+            models["k3"].info.context_window.get(),
+            1_048_576,
+            "Code k3 is the 1M membership model id, distinct from Platform kimi-k3"
+        );
+        assert_eq!(
+            models["k3"].info.reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
 
         let mut cfg = mgr.inner.cfg.read().clone();
         cfg.models.kimi_endpoint = KimiApiEndpoint::Platform;
@@ -2914,6 +2928,8 @@ mod tests {
         assert_eq!(mgr.effective_kimi_endpoint(), KimiApiEndpoint::Platform);
         let models = mgr.models();
         assert!(models.contains_key("kimi-k3"));
+        assert!(!models.contains_key("k3"));
+        assert!(!models.contains_key("k3-256k"));
         assert!(!models.contains_key("kimi-for-coding"));
         assert!(!models.contains_key("kimi-for-coding-highspeed"));
     }
