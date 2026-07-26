@@ -56,7 +56,10 @@ impl std::fmt::Debug for AuthManagerBearerResolver {
 
 impl xai_grok_sampler::BearerResolver for AuthManagerBearerResolver {
     fn current_bearer(&self) -> Option<String> {
-        self.0.current_or_expired().map(|auth| auth.key)
+        // Never put a hard-expired AT on the wire. Soft/buffer-expired tokens
+        // remain wire-valid and are still returned here; hard-expired ones
+        // omit so static Authorization cannot carry a dead seed either.
+        self.0.current_wire_valid().map(|auth| auth.key)
     }
 
     fn fail_closed_on_missing(&self) -> bool {
@@ -652,6 +655,17 @@ impl SessionActor {
         if use_bearer_resolver && let Some(am) = self.auth_manager.as_ref() {
             let _ = am.auth().await;
         }
+        // xAI session-token path: seed Authorization only from a wire-valid
+        // AT. Hard-expired seeds must not ride as a static fallback beside
+        // the bearer resolver. Codex / BYOK / third-party keys keep the
+        // chat-state credential (multi-provider 401 recovery uses those).
+        let api_key = if use_bearer_resolver {
+            self.auth_manager
+                .as_ref()
+                .and_then(|am| am.current_wire_valid().map(|a| a.key))
+        } else {
+            creds.api_key
+        };
         let auth_scheme =
             crate::agent::config::effective_auth_scheme(cfg.provider, model_facts.auth_scheme);
         let mut extra_headers = cfg.extra_headers;
@@ -701,7 +715,7 @@ impl SessionActor {
             .model_supports_codex_multi_agent_v2(&cfg.model);
         let reasoning_summary = self.models_manager.model_reasoning_summary(&cfg.model);
         SamplingConfig {
-            api_key: creds.api_key,
+            api_key,
             base_url: cfg.base_url,
             model: cfg.model,
             max_completion_tokens: cfg.max_completion_tokens,
@@ -1767,8 +1781,10 @@ impl SessionActor {
     /// branch when the session gate was active — that path is for BYOK JWTs
     /// only. Falling through after a failed session refresh left hard-expired
     /// opaque tokens (External/OIDC) on the wire and guaranteed a 401.
-    /// Soft failures with a still-usable access token still return here
-    /// (grace / optimistic send); 401 recovery remains the safety net.
+    /// Hard-expired + failed refresh strips the chat-state seed so default
+    /// headers cannot carry a dead AT. Soft failures with a still-usable
+    /// (wire-valid / buffer-window) access token retain the seed; 401
+    /// recovery remains the safety net for that case.
     pub(crate) async fn refresh_token_if_expired(&self) {
         let mut creds = self.chat_state_handle.get_credentials().await;
         let sampling_config = self.chat_state_handle.get_sampling_config().await;
@@ -1820,6 +1836,15 @@ impl SessionActor {
                         }
                         Err(error) => {
                             let hard_expired = !am.has_usable_token();
+                            // Hard-expired: strip the chat-state seed so
+                            // reconstruct_full_config / static Authorization
+                            // cannot keep sending a dead AT. Soft/buffer
+                            // failures keep the seed (still wire-accepted).
+                            if hard_expired && creds.api_key.is_some() {
+                                let mut cleared = creds;
+                                cleared.api_key = None;
+                                self.chat_state_handle.update_credentials(cleared);
+                            }
                             tracing::warn!(
                                 %error,
                                 hard_expired,

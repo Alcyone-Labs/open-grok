@@ -135,12 +135,14 @@ When you run `/create-skill`, Grok:
 
 ### Choosing a Scope
 
-Grok asks where to save the skill:
+Open Grok asks where to save the skill:
 
-- **Project** (`<repo_root>/.opengrok/skills/<name>/`) -- available only in this repository and shareable with teammates through version control. Grok recommends this scope inside a git repository.
+- **Project** (`<repo_root>/.opengrok/skills/<name>/`) -- available only in this repository and shareable with teammates through version control. Open Grok recommends this scope inside a git repository.
 - **User** (`~/.opengrok/skills/<name>/`) -- available across all your projects.
 
-The new skill appears in the slash menu within a few seconds, because Grok reloads skills when files change on disk.
+To distribute a skill to a whole team or organization, package it in a plugin and publish it through a marketplace. See [Create your own marketplace](09-plugins.md#create-your-own-marketplace) and [Distribute across an organization](09-plugins.md#distribute-across-an-organization).
+
+The new skill appears in the slash menu within a few seconds, because Open Grok reloads skills when files change on disk.
 
 ---
 

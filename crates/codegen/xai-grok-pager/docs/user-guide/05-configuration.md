@@ -28,8 +28,8 @@ Location: `~/.opengrok/config.toml`. If the file is missing, Open Grok uses its 
 auto_update = true                     # check for updates on launch
 
 [models]
-default = "grok-build"                 # model used for new sessions
-web_search = "grok-4.20-multi-agent"   # model used by the web_search tool
+default = "grok-4.5"                   # model used for new sessions
+web_search = "grok-4.5"                # model used by the web_search tool
 # Optional independent helper models. Leave either unset for Automatic:
 # Codex sessions use gpt-5.6-terra at medium reasoning; xAI sessions keep
 # their active model at low reasoning. An explicit choice may cross providers

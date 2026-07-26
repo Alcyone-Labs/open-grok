@@ -1340,13 +1340,16 @@ fn make_test_handle(
     yolo: bool,
     client_id: Option<&str>,
 ) -> crate::session::SessionHandle {
+    // Platform-absolute cwd: `/tmp` is not absolute on Windows (`AbsPathBuf::new`).
+    let test_cwd = std::env::temp_dir();
+    let test_cwd_str = test_cwd.to_string_lossy().into_owned();
     let (cmd_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
     let (hunk_event_tx, _hunk_event_rx) = tokio::sync::mpsc::unbounded_channel();
     let hunk_cancel = tokio_util::sync::CancellationToken::new();
     let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
         "test".to_string(),
-        std::path::PathBuf::from("/tmp"),
+        test_cwd.clone(),
         hunk_event_tx,
         xai_hunk_tracker::TrackingMode::AllDirty,
         hunk_cancel,
@@ -1360,7 +1363,7 @@ fn make_test_handle(
         )),
         info: crate::session::info::Info {
             id: acp::SessionId::new("test"),
-            cwd: "/tmp".to_string(),
+            cwd: test_cwd_str,
         },
         max_turns: None,
         resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
@@ -1377,9 +1380,9 @@ fn make_test_handle(
         upload_queue: Arc::new(OnceLock::new()),
         upload_failures_since_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         tool_context: crate::tools::ToolContext::new_local_context(
-            xai_grok_paths::AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap(),
+            xai_grok_paths::AbsPathBuf::new(test_cwd.clone()).expect("temp_dir is absolute"),
             std::sync::Arc::new(xai_grok_workspace::file_system::LocalFs::new(
-                std::path::PathBuf::from("/tmp"),
+                test_cwd.clone(),
             )),
             std::sync::Arc::new(crate::terminal::LocalTerminalRunner),
         ),
@@ -1393,7 +1396,7 @@ fn make_test_handle(
         code_nav_enabled: false,
         ask_user_question_enabled: true,
         plan_mode: std::sync::Arc::new(parking_lot::Mutex::new(
-            crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from("/tmp")),
+            crate::session::plan_mode::PlanModeTracker::new(test_cwd),
         )),
         force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         permission_handle: xai_grok_workspace::permission::PermissionHandle::allow_all(),
@@ -1955,6 +1958,77 @@ async fn ext_method_routes_auth_cleared_and_refreshes_resident_sessions() {
             assert!(!agent.managed_mcp_cache.lock().await.gateway_tools_active);
         })
         .await;
+}
+/// Fresh managed catalog sync must push UpdateMcpServers with the injected
+/// managed connector. The `search_tool` rebuild is a SEPARATE broadcast
+/// (`refresh_mcp_search_index_in_sessions`), so it is not asserted here.
+#[tokio::test(flavor = "current_thread")]
+async fn sync_fresh_managed_mcp_pushes_update() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let agent = build_agent_with_auth(crate::auth::GrokAuth {
+                key: "eligible".into(),
+                auth_mode: crate::auth::AuthMode::WebLogin,
+                ..crate::auth::GrokAuth::test_default()
+            });
+            let sid = acp::SessionId::new("sess-managed-sync");
+            let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+            agent.sessions.borrow_mut().insert(sid, handle);
+            let managed = vec![crate::session::managed_mcp::ManagedMcpConfig {
+                name: "Linear".into(),
+                endpoint: "https://mcp.example.com/linear".into(),
+                headers: std::collections::HashMap::from([(
+                    "Authorization".into(),
+                    "Bearer tok".into(),
+                )]),
+                token_expires_at: None,
+                scope: None,
+                scope_id: None,
+                scope_name: None,
+            }];
+            agent.sync_fresh_managed_mcp_to_sessions(&managed);
+            let first = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx.recv())
+                .await
+                .expect("UpdateMcpServers should be sent")
+                .expect("channel should stay open");
+            let SessionCommand::UpdateMcpServers { mcp_servers, .. } = first else {
+                panic!("expected UpdateMcpServers as the first synced command");
+            };
+            let managed_name = crate::session::managed_mcp::to_managed_name("Linear");
+            let linear = mcp_servers
+                .iter()
+                .find_map(|s| match s {
+                    acp::McpServer::Http(http) if http.name == managed_name => Some(http),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    panic!("merged catalog must contain managed HTTP server {managed_name}")
+                });
+            assert!(
+                linear
+                    .headers
+                    .iter()
+                    .any(|h| h.name == "Authorization" && h.value == "Bearer tok"),
+                "managed server must carry the injected Authorization header"
+            );
+        })
+        .await;
+}
+/// The gateway-catalog refresh broadcast pushes `RefreshMcpSearchIndex` to every
+/// live session (independent of the legacy managed-connector sync).
+#[tokio::test(flavor = "current_thread")]
+async fn refresh_mcp_search_index_broadcasts_to_sessions() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("sess-search-index");
+    let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+    agent.sessions.borrow_mut().insert(sid, handle);
+    agent.refresh_mcp_search_index_in_sessions();
+    let cmd = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx.recv())
+        .await
+        .expect("RefreshMcpSearchIndex should be sent")
+        .expect("channel should stay open");
+    assert!(matches!(cmd, SessionCommand::RefreshMcpSearchIndex));
 }
 /// Build a minimal MvpAgent suitable for testing extension methods.
 fn build_minimal_agent_for_tests() -> MvpAgent {
@@ -3518,10 +3592,7 @@ fn make_live_session_handle(
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut handle = make_test_handle("test-model", false, Some("grok-tui"));
     handle.cmd_tx = cmd_tx.clone();
-    handle.info = crate::session::info::Info {
-        id: sid.clone(),
-        cwd: "/tmp".to_string(),
-    };
+    handle.info.id = sid.clone();
     if let Some(pid) = running_prompt {
         *handle.current_prompt_id.lock().unwrap() = Some(pid.to_string());
     }
