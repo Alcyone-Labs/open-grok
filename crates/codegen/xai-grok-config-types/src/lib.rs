@@ -711,6 +711,9 @@ pub struct RemoteSettings {
     /// Tighten-only, like `external_otel_disabled`.
     #[serde(default)]
     pub external_otel_content_gates_locked: Option<bool>,
+    /// `Some(false)` disarms managed-config signature verification (remote kill-switch).
+    #[serde(default)]
+    pub managed_config_signature_verification: Option<bool>,
     #[serde(default)]
     pub telemetry_enabled: Option<bool>,
     /// Telemetry mode override (string): `"session-metrics"`, `"full"`, `"off"`.
@@ -926,11 +929,13 @@ pub struct RemoteSettings {
     #[serde(default)]
     pub group_tool_verbs: Option<bool>,
     /// Whether the TUI shows Edit tool calls as a collapsed one-line `+N/-M`
-    /// diffstat summary by default (expand for the diff). `None` defers to
-    /// local config / env / default (`false`); `Some(false)` is a remote kill
+    /// diffstat summary by default and merges back-to-back edits to the same
+    /// file into one row (expand for the diffs). `None` defers to local
+    /// config / env / default (`false`); `Some(false)` is a remote kill
     /// switch. Resolved via `resolve_collapsed_edit_blocks` (requirements >
     /// env > user > managed > remote > default false). Explicit pager.toml
-    /// `[scrollback.blocks.edit]` shape keys override the flag client-side.
+    /// `[scrollback.blocks.edit]` shape keys override the flag's fold shape
+    /// client-side; merging always follows the flag.
     #[serde(default)]
     pub collapsed_edit_blocks: Option<bool>,
     /// Display-refresh probe + auto-cadence. See [`DisplayRefreshSettings`].

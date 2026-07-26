@@ -7,9 +7,9 @@ use ratatui::layout::Rect;
 use crate::app::actions::Action;
 use crate::input::line_editor::LineEditor;
 use crate::settings::{
-    EnumChoice, OwnedEnumChoice, PagerLocalSnapshot, SecretInput, SettingCategory, SettingKey,
-    SettingKind, SettingMeta, SettingValue, SettingsRegistry, StringValidator, current_value_for,
-    dynamic_enum_choices,
+    CodingDataSharingLock, EnumChoice, OwnedEnumChoice, PagerLocalSnapshot, SecretInput,
+    SettingCategory, SettingKey, SettingKind, SettingMeta, SettingValue, SettingsRegistry,
+    StringValidator, current_value_for, dynamic_enum_choices,
 };
 use crate::views::modal_window::ModalWindowState;
 
@@ -684,6 +684,16 @@ impl SettingsModalState {
         )
     }
 
+    /// Why a Browse row cannot be edited (`None` = editable). Consulted by
+    /// both render and input.
+    pub fn row_lock(&self, key: SettingKey) -> Option<CodingDataSharingLock> {
+        if key == "coding_data_sharing" {
+            self.pager_snapshot.coding_data_sharing_lock
+        } else {
+            None
+        }
+    }
+
     /// Transition to `PickingEnum` if the focused row is Enum/DynamicEnum.
     /// Returns `false` if the focused row is another kind.
     pub fn try_enter_picking_enum(&mut self) -> bool {
@@ -691,6 +701,9 @@ impl SettingsModalState {
             let Some((key, meta)) = self.focused_setting() else {
                 return false;
             };
+            if self.row_lock(key).is_some() {
+                return false;
+            }
             // Handles both static `Enum` and `DynamicEnum` catalogs.
             let (supports_preview, resolved): (bool, Vec<OwnedEnumChoice>) = match &meta.kind {
                 SettingKind::Enum {

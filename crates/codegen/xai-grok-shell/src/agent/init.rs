@@ -23,9 +23,17 @@ pub fn bootstrap(
     auth_manager: &Arc<AuthManager>,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> Result<(AgentConfig, ModelsManager), String> {
-    // Fail closed before any policy is read: a tampered managed policy must not run unmanaged.
+    // Signature kill-switch before the gate when the client pre-supplied remote
+    // settings. Open Grok deliberately does **not** auto-fetch remote settings
+    // here: xAI product kill-switches (workflows_enabled, etc.) must never strip
+    // fork features. Clients that thread remote_settings for managed-config
+    // signature disarm still get that side effect before fail-closed policy read.
+    let mut cfg = cfg.clone();
+    crate::agent::config::apply_remote_settings_side_effects(cfg.remote_settings.as_ref());
+    // Strip product flags before any policy/feature resolution.
+    cfg.remote_settings = None;
     crate::managed_config::managed_policy_gate()?;
-    let cfg = resolve_config(cfg, auth_manager);
+    let cfg = resolve_config(&cfg, auth_manager);
     cfg.validate_model_filters()?;
     init_process(&cfg, auth_manager);
     let models_manager = ModelsManager::from_config(&cfg, prefetched, auth_manager.clone())?;
@@ -117,6 +125,12 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
+        // Every agent mode (stdio/headless/leader and the in-process TUI
+        // agent) passes through here, so diagnostic uploads always carry
+        // the version stamp and the resource ceilings in effect.
+        xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
+        crate::util::limits::log_effective_limits();
+
         if !cfg!(test) {
             // Clear a logged-out team's files before the background sync runs.
             crate::managed_config::clear_orphan();

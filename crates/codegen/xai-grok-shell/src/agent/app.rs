@@ -60,9 +60,10 @@ pub struct LeaderAutoUpdateConfig {
 const AUTO_UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 /// How long the auto-update shutdown waits for session actors to flush
-/// before the leader exits. Sessions are idle at this point, so the flush
-/// normally completes in milliseconds; the cap only bounds a wedged actor.
-const AUTO_UPDATE_FLUSH_GRACE: Duration = Duration::from_secs(10);
+/// before the leader exits. Alias of
+/// [`crate::agent::activity::SESSION_FLUSH_GRACE`] so this path and the
+/// in-process exit flush share the same bound.
+const AUTO_UPDATE_FLUSH_GRACE: Duration = crate::agent::activity::SESSION_FLUSH_GRACE;
 
 /// Consecutive busy deferrals after which an installed update proceeds
 /// anyway (with the graceful flush). Bounds how long a permanently-"busy"

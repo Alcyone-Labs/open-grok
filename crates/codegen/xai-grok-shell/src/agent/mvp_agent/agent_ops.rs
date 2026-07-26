@@ -483,6 +483,16 @@ impl MvpAgent {
     pub fn set_activity(&mut self, activity: crate::agent::activity::AgentActivity) {
         self.activity = activity;
     }
+    /// Send [`SessionCommand::Shutdown`] to every live session actor and wait
+    /// up to `grace` for them to exit (SessionEnd hooks, memory save, etc.).
+    ///
+    /// Call on non-leader process quit **after** the cancel token fires but
+    /// **before** dropping the agent / exiting the process, so session actors
+    /// are not killed mid-hook. Mirrors the leader auto-update / relaunch
+    /// flush path ([`crate::agent::activity::AgentActivity::flush_all_sessions`]).
+    pub async fn flush_all_sessions(&self, grace: std::time::Duration) {
+        self.activity.flush_all_sessions(grace).await;
+    }
     /// Install the channel that fans new session cwds into the leader's
     /// `ConfigFileWatcher::watch_path`. Called once after
     /// the watcher is constructed in `agent/app.rs`. In simple /

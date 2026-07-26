@@ -67,6 +67,16 @@ pub enum WorkspaceError {
         message: String,
     },
 
+    /// GitHub export failure tagged with its wire class; see
+    /// [`ExportGithubError`] for how the class crosses the workspace RPC boundary.
+    ///
+    /// [`ExportGithubError`]: xai_grok_workspace_types::rpc::export_github::ExportGithubError
+    #[error("github export error: {message}")]
+    ExportGithub {
+        kind: xai_grok_workspace_types::rpc::export_github::ExportGithubError,
+        message: String,
+    },
+
     /// The workspace is draining/shutting down and is no longer accepting new
     /// sessions. Surfaced when a `bind`/create races a terminal drain so the
     /// shared upload queue is never torn down out from under a fresh session.
@@ -84,7 +94,7 @@ pub enum WorkspaceError {
 
 impl WorkspaceError {
     /// Low-cardinality `error_kind` metric label: the variant name in
-    /// snake_case; `DeployError` reports its per-kind `wire_code()`.
+    /// snake_case; deploy/export variants report their per-kind `wire_code()`.
     pub fn metric_kind(&self) -> &'static str {
         match self {
             Self::ParentSessionNotFound(_) => "parent_session_not_found",
@@ -102,6 +112,7 @@ impl WorkspaceError {
             Self::HunkActionFailed(_) => "hunk_action_failed",
             Self::HubError(_) => "hub_error",
             Self::DeployError { kind, .. } => kind.wire_code(),
+            Self::ExportGithub { kind, .. } => kind.wire_code(),
             Self::ShuttingDown => "shutting_down",
             Self::ToolsetExternallyOwned(_) => "toolset_externally_owned",
         }
@@ -120,6 +131,18 @@ mod tests {
     fn metric_kind_reports_deploy_wire_code() {
         for kind in DeployError::ALL {
             let err = WorkspaceError::DeployError {
+                kind,
+                message: "m".into(),
+            };
+            assert_eq!(err.metric_kind(), kind.wire_code());
+        }
+    }
+
+    #[test]
+    fn metric_kind_reports_export_github_wire_code() {
+        use xai_grok_workspace_types::rpc::export_github::ExportGithubError;
+        for kind in ExportGithubError::ALL {
+            let err = WorkspaceError::ExportGithub {
                 kind,
                 message: "m".into(),
             };

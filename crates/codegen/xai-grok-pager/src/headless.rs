@@ -26,7 +26,7 @@ use xai_grok_shell::sampling::types::{
 use xai_grok_shell::util::config as cli_config;
 
 use crate::acp::model_state::{EffortTokenError, ModelState};
-use crate::acp::spawn::spawn_grok_shell;
+use crate::acp::spawn::{AgentShutdownGuard, spawn_grok_shell};
 use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -1110,6 +1110,8 @@ pub async fn run_single_turn(
             anyhow::bail!("{msg}");
         }
     };
+    // Cancel + join on every return path (success or bail).
+    let _agent_guard = AgentShutdownGuard::new(cancel.clone(), Some(spawned.thread_handle));
     let (acp_tx, mut acp_rx) = (spawned.channel.tx, spawned.channel.rx);
     crate::unified_log::init(acp_tx.clone());
     crate::unified_log::info(
@@ -1129,7 +1131,6 @@ pub async fn run_single_turn(
         Err(e) => {
             let msg = format!("Couldn't initialize: {e}");
             emitter.on_error(&msg);
-            cancel.cancel();
             anyhow::bail!("{msg}");
         }
     };
@@ -1156,7 +1157,6 @@ pub async fn run_single_turn(
         Ok(is_api_key) => is_api_key,
         Err(e) => {
             emitter.on_error(&e.to_string());
-            cancel.cancel();
             return Err(e);
         }
     };
@@ -1216,7 +1216,6 @@ pub async fn run_single_turn(
         Err(e) => {
             let msg = format!("Couldn't create session: {e}");
             emitter.on_error(&msg);
-            cancel.cancel();
             anyhow::bail!("{msg}");
         }
     };
@@ -1250,7 +1249,6 @@ pub async fn run_single_turn(
     {
         let msg = e.to_string();
         emitter.on_error(&msg);
-        cancel.cancel();
         anyhow::bail!("{msg}");
     }
 
@@ -1352,7 +1350,6 @@ pub async fn run_single_turn(
             msg = acp_rx.recv() => {
                 let Some(msg) = msg else {
                     emitter.on_error("Connection closed unexpectedly");
-                    cancel.cancel();
                     anyhow::bail!("Connection closed unexpectedly");
                 };
                 handle_headless_acp_message(
@@ -1432,7 +1429,7 @@ pub async fn run_single_turn(
         // Non-blocking flock so a slow/network ~/.opengrok can't hang exit.
         let _ = xai_grok_shell::active_sessions::try_unregister(&session_id);
     }
-    cancel.cancel();
+    // Agent cancel + join (SessionEnd flush) runs in AgentShutdownGuard::drop.
     match prompt_result {
         Some(Ok(resp)) => {
             let stop_reason = format!("{:?}", resp.stop_reason);
