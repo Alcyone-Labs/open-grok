@@ -20,7 +20,7 @@ use crate::agent::config::{Config as AgentConfig, ModelEntry};
 use crate::agent::init::{bootstrap, exit_on_config_error};
 use crate::agent::models::{ModelFetchAuth, prefetch_models_blocking};
 use crate::agent::mvp_agent::MvpAgent;
-use crate::auth::{AuthManager, AuthMode, GrokAuth, run_auth_flow};
+use crate::auth::{AuthManager, AuthMode, GrokAuth, GrokComConfig, run_auth_flow};
 use crate::util::grok_home;
 use dirs;
 
@@ -176,24 +176,6 @@ pub(crate) async fn run_auto_update_checker(
     }
 }
 
-/// Prefetch models from the API (must be called outside LocalSet).
-async fn prefetch_models(agent_config: &AgentConfig) -> Option<IndexMap<String, ModelEntry>> {
-    let auth = agent_config.create_auth_manager().current();
-    let endpoints = agent_config.endpoints.clone();
-    let fetch_auth = ModelFetchAuth::resolve(&endpoints, auth.is_some());
-
-    if auth.is_some() || endpoints.has_custom_endpoint() || fetch_auth != ModelFetchAuth::Session {
-        tokio::task::spawn_blocking(move || {
-            prefetch_models_blocking(&endpoints, auth.as_ref(), fetch_auth)
-        })
-        .await
-        .ok()
-        .flatten()
-    } else {
-        None
-    }
-}
-
 /// Spawn the agent inside a LocalSet and return a handle to the I/O future.
 fn spawn_agent_local(
     agent_config: AgentConfig,
@@ -207,6 +189,8 @@ fn spawn_agent_local(
     let gateway = GatewaySender::new(gw_tx);
     let mut agent = MvpAgent::new(gateway, &agent_config, auth_manager, prefetched_models)
         .unwrap_or_else(exit_on_config_error);
+    // Background the catalog refresh so readiness never blocks on the network.
+    agent.models_manager.spawn_background_refresh();
     if let Some(mc) = memory_config {
         agent.set_memory_config(mc);
     }
@@ -333,12 +317,7 @@ pub async fn run_stdio_agent(
 
     let _total_timer = crate::instrumentation_timer!("startup.stdio_agent_total");
     let outgoing = tokio::io::stdout().compat_write();
-    let prefetched_models = if prefetched_models.is_some() {
-        prefetched_models
-    } else {
-        let _timer = crate::instrumentation_timer!("startup.stdio_prefetch_models");
-        prefetch_models(agent_config).await
-    };
+    // Non-blocking boot: catalog refreshes in the background, not before readiness.
     let agent_config = agent_config.clone();
 
     // Use a simplex intermediary between stdin and the agent so we can
@@ -402,6 +381,9 @@ pub async fn run_stdio_agent(
 
             // Restore managed policy right before bootstrap reads it (no stale window after prefetch).
             crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
+            // Fail-closed external-OTEL gate: suppress until settings resolve,
+            // opening now only for a pure env-API-key user (no remote policy).
+            apply_otel_config(&auth_manager, &agent_config.grok_com_config);
             let handle_io = spawn_agent_local(
                 agent_config,
                 auth_manager,
@@ -922,11 +904,12 @@ fn spawn_leader_relay(
 /// 2. Socket cleanup, channel + readiness-watch creation.
 /// 3. IPC server started (`tokio::spawn`) — socket bound HERE, before auth.
 /// 4. Wait for socket to appear (fast: < 100 ms).
-/// 5. Auth + model prefetch (slow path, but socket already available to clients).
-///    - Auth resolves non-interactively; `None` (BYOK / no session) is not an
-///      error — the relay is gated off and login is deferred to ACP.
-/// 6. `ready_tx.send(true)` — unblocks ACP forwarding in the IPC server.
-/// 7. LocalSet: agent, IPC↔agent bridges, WS↔agent bridges, relay, config watcher.
+/// 5. Lock handoff with spawner (if launched via connect_or_spawn).
+/// 6. Bounded non-interactive auth (no blocking model/settings prefetch; those
+///    stream in after readiness). `None` (BYOK / no session) is not an error:
+///    the relay stays off and a background cold-mint / re-login can start it later.
+/// 7. `ready_tx.send(true)` — unblocks ACP forwarding in the IPC server.
+/// 8. LocalSet: agent, IPC↔agent bridges, WS↔agent bridges, relay, config watcher.
 ///
 /// # Arguments
 ///
@@ -935,6 +918,34 @@ fn spawn_leader_relay(
 /// * `relay_on_demand` - If true, defer the grok.com relay WebSocket until the
 ///   first headless IPC client registers; if false (default), connect eagerly at
 ///   startup. See [`spawn_leader_relay`].
+
+/// Close the external-OTEL gate before telemetry init; see
+/// [`crate::agent::otel_gate`].
+pub fn suppress_otel() {
+    crate::agent::otel_gate::suppress();
+}
+
+/// Startup external-OTEL gate for an in-process (embedded) agent. Mirrors the
+/// leader startup gate so the pager process is fail-closed by construction at the
+/// agent boundary: suppress until the agent's first settings outcome, except a
+/// pure env-API-key user (no session now, none minting) whose stream has no
+/// remote policy and may emit immediately.
+pub fn apply_otel_config(auth_manager: &AuthManager, grok_com_config: &GrokComConfig) {
+    suppress_otel();
+    // Session presence is disk-based (valid or expired), not refresh success: an
+    // expired session the refresher will renew still has a remote policy, so it
+    // must keep the gate closed.
+    let has_session = auth_manager.current().is_some() || auth_manager.read_disk_auth().is_some();
+    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
+        has_session,
+        has_api_key_env: crate::agent::auth_method::has_xai_api_key_env(),
+        session_pending: crate::agent::otel_gate::is_session_pending(has_session, grok_com_config),
+        remote_fetch_enabled: crate::util::config::resolve_remote_fetch_enabled(),
+    }) {
+        crate::agent::otel_gate::open_at_startup();
+    }
+}
+
 pub async fn run_leader(
     agent_config: &AgentConfig,
     no_exit_on_disconnect: bool,
@@ -1145,51 +1156,58 @@ pub async fn run_leader(
     // messages during this window receive a `leader_starting` error and can retry.
 
     let ctx = &agent_config.grok_com_config;
-    // Never interactive: a detached leader has no TTY (forcing OAuth here hung BYOK).
-    let auth: Option<GrokAuth> = crate::auth::try_ensure_session_noninteractive(ctx).await;
+
+    suppress_otel(); // idempotent re-assert
+    // No-mint on the readiness path: a cached/expired session + a bounded
+    // (~5s) refresh only. A session-less-but-mintable leader is minted by the
+    // post-readiness background task below, so readiness never blocks on the
+    // provider command (which could take up to STARTUP_AUTH_TIMEOUT ~60s).
+    let auth: Option<GrokAuth> = crate::auth::try_noninteractive_auth_no_mint(ctx).await;
 
     // ── Phase 6b: Legacy devbox auth migration ─────────────────────────────
     let auth: Option<GrokAuth> = migrate_devbox_auth_if_legacy(auth, &agent_config).await;
 
-    let auth_for_prefetch: Option<GrokAuth> = auth.clone();
-    let endpoints_for_prefetch = agent_config.endpoints.clone();
-    let fetch_auth_for_prefetch = ModelFetchAuth::resolve(&endpoints_for_prefetch, auth.is_some());
-    // The shared pair helper owns the remote_fetch gate for both halves, so a
-    // disabled knob cannot block leader readiness on settings retries.
-    let (prefetched_models, remote_settings) = tokio::task::spawn_blocking(move || {
-        crate::agent::models::prefetch_models_and_settings_blocking(
-            &endpoints_for_prefetch,
-            auth_for_prefetch.as_ref(),
-            fetch_auth_for_prefetch,
-        )
-    })
-    .await
-    .unwrap_or((None, None));
+    // Pure env-API-key leaders open external OTEL at readiness; any session
+    // (or a pending mint) keeps the gate closed until settings resolve. A
+    // mintable session-less leader also waits: cold-mint may produce a
+    // grok.com session post-readiness whose fleet policy governs
+    // external OTEL; see the background cold-mint below.
+    // Disk presence, not the is_xai-filtered no-mint result: an enterprise
+    // session has remote policy and must keep the gate closed.
+    let has_session = auth.is_some()
+        || agent_config
+            .create_auth_manager()
+            .read_disk_auth()
+            .is_some();
+    let session_pending =
+        crate::agent::otel_gate::is_session_pending(has_session, &agent_config.grok_com_config);
+    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
+        has_session,
+        has_api_key_env: crate::agent::auth_method::has_xai_api_key_env(),
+        session_pending,
+        remote_fetch_enabled: crate::util::config::resolve_remote_fetch_enabled(),
+    }) {
+        info!("Pure env-API-key leader; opening external-OTEL gate (no remote policy applies)");
+        crate::agent::otel_gate::open_at_startup();
+    }
 
-    // Process-wide image normalize cache: off by default, toggled here from
-    // `RemoteSettings.image_normalize_cache_enabled` once at startup.
-    let image_normalize_cache_enabled = remote_settings
-        .as_ref()
-        .and_then(|r| r.image_normalize_cache_enabled)
-        .unwrap_or(false);
-    crate::session::normalize_cache::NormalizeCache::global()
-        .set_enabled(image_normalize_cache_enabled);
-    tracing::debug!(
-        enabled = image_normalize_cache_enabled,
-        "image normalize cache toggle resolved from remote settings"
-    );
+    // Non-blocking boot: nothing is prefetched; the catalog and remote settings
+    // stream in after readiness via the background refreshes below.
+    let prefetched_models: Option<_> = None;
+    let remote_settings: Option<_> = None;
 
     // ── Phase 7: Signal readiness ─────────────────────────────────────────────
     //
     // Unblocks ACP forwarding inside the IPC server. From this point on, client
     // ACP messages are forwarded to the agent as normal.
     let _ = ready_tx.send(true);
-    info!("Leader ready: auth and model prefetch complete, ACP forwarding enabled");
+    info!(
+        "Leader ready: local-only boot (model/settings refresh runs in background), ACP forwarding enabled"
+    );
 
     // ── Phase 8: LocalSet — agent, bridges, relay, config watcher ────────────
 
     let local_set = tokio::task::LocalSet::new();
-    let remote_settings_for_reloader = remote_settings.clone();
     let mut agent_config_for_spawn = agent_config.clone();
     agent_config_for_spawn.remote_settings = remote_settings;
     crate::util::config::sync_campaign_fields(&mut agent_config_for_spawn);
@@ -1205,16 +1223,25 @@ pub async fn run_leader(
     // process so a refresh can't straddle a suspend.
     shared_auth_manager.start_system_power_listener();
 
-    // Decided once here; not (re)started if a client authenticates mid-session.
-    // The refresher lands on `shared_auth_manager` during `MvpAgent`
-    // construction below; a relay 401 in the window before that surfaces as
-    // a transient recovery failure and is retried, not a dead end.
+    // Seed the startup-resolved session into the shared manager so per-request
+    // `auth()` and relay eligibility read it as the single source.
+    if let Some(session) = auth.as_ref()
+        && should_seed_shared_session(shared_auth_manager.current_or_expired().as_ref(), session)
+    {
+        shared_auth_manager.hot_swap(session.clone());
+    }
+
+    // Relay start policy from startup auth; `None` (session-less boot) is not
+    // permanent — the config-update loop arms the relay via `DeferredRelayArm`
+    // when the watcher hot-reloads a relay-eligible token.
     let relay_config: Option<RelayConfig> =
         relay_config_for_session(auth.as_ref(), &agent_config, &shared_auth_manager);
     // Same manager as the leader, so the exposure never writes auth.json itself.
     workspace_control.set_auth_manager(shared_auth_manager.clone());
     let auth_manager_for_agent = shared_auth_manager.clone();
-    let auth_manager_for_config = shared_auth_manager;
+    let auth_manager_for_config = shared_auth_manager.clone();
+
+    let auth_manager_for_mint = shared_auth_manager.clone();
 
     // Restore managed policy right before bootstrap reads it (no stale window after the long auth/prefetch phase).
     crate::managed_config::ensure_managed_policy_present(&auth_manager_for_agent).await;
@@ -1225,6 +1252,9 @@ pub async fn run_leader(
         prefetched_models,
     )
     .unwrap_or_else(exit_on_config_error);
+
+    shared_models_manager.spawn_background_refresh();
+
     let models_manager_for_agent = shared_models_manager.clone();
     let models_manager_for_config = shared_models_manager;
 
@@ -1370,6 +1400,33 @@ pub async fn run_leader(
             // connect unconditionally. Leaders auto-spawned by interactive
             // clients pass `relay_on_demand` and defer the WebSocket until the
             // first headless registration. See `spawn_leader_relay`.
+            // Re-run the minter off the readiness path: the startup attempt is
+            // no-mint, so a mintable leader (auth provider / devbox) acquires
+            // its session here. Runs on the LocalSet (the external-provider
+            // flow is `!Send`); on success `mint_session_noninteractive`
+            // persists to auth.json, which the config-update loop below picks up
+            // to heal `auth()` and arm the relay via `DeferredRelayArm`.
+            if session_pending {
+                let mint_auth_manager = auth_manager_for_mint;
+                let mint_cancel = cancel_clone.clone();
+                tokio::task::spawn_local(async move {
+                    tokio::select! {
+                        biased;
+                        _ = mint_cancel.cancelled() => {}
+                        minted = crate::auth::mint_session_noninteractive(&mint_auth_manager)
+                            => match minted {
+                            Some(session) => info!(
+                                is_xai = session.is_xai_auth(),
+                                "background cold-mint acquired a session post-readiness"
+                            ),
+                            None => warn!(
+                                "background cold-mint found no session; leader remains session-less"
+                            ),
+                        },
+                    }
+                });
+            }
+
             let relay_handle_slot = if let Some(relay_config) = relay_config {
                 spawn_leader_relay(
                     relay_config,
@@ -1380,7 +1437,15 @@ pub async fn run_leader(
                     cancel_clone.clone(),
                 )
             } else {
-                info!("Relay disabled: no grok.com session token (BYOK / local-only leader)");
+                // No relay-eligible auth at startup (BYOK / local-only, or a
+                // devbox whose initial mint is still pending). Park so the
+                // config-update loop arms the relay once cold-mint/re-login
+                // writes a relay-eligible token.
+                info!(
+                    "Relay not started: no grok.com session token \
+                     (BYOK / local-only leader); will arm if an eligible \
+                     token appears"
+                );
                 Rc::new(std::cell::RefCell::new(None))
             };
 
@@ -1474,7 +1539,7 @@ pub async fn run_leader(
                     initial_auth_key_hash,
                     initial_config,
                     auth_scope,
-                    remote_settings_for_reloader,
+                    None, // settings stream in after readiness via background refresh
                     config_update_tx,
                     agent_config.cli_experimental_memory,
                     agent_config.cli_no_memory,
@@ -1688,6 +1753,36 @@ pub async fn run_leader(
 
 #[cfg(test)]
 mod tests {
+
+    /// The external-OTEL gate opens at startup only for a pure env-API-key leader:
+    /// env key set, no session, no pending mint. Any session (resolved of any
+    /// credential type, or about to be minted) makes it wait for the fetch.
+    #[test]
+    fn otel_gate_opens_only_for_pure_env_api_key_leader() {
+        use crate::agent::otel_gate::{StartupGate, should_open_at_startup};
+        let opens = |has_session, has_api_key_env, session_pending| {
+            should_open_at_startup(StartupGate {
+                has_session,
+                has_api_key_env,
+                session_pending,
+                remote_fetch_enabled: true,
+            })
+        };
+        //         (has_session, has_api_key_env, session_pending)
+        assert!(opens(false, true, false), "pure env API key → opens");
+        assert!(!opens(true, true, false), "any resolved session → waits");
+        assert!(!opens(true, false, false), "session, no env key → waits");
+        assert!(
+            !opens(false, true, true),
+            "pending mint → session coming, waits"
+        );
+        assert!(!opens(false, false, false), "no credentials → waits");
+        assert!(
+            !opens(false, false, true),
+            "pending mint, no env key → waits"
+        );
+    }
+
     use super::*;
     use std::sync::atomic::AtomicU32;
     use tokio::sync::watch;

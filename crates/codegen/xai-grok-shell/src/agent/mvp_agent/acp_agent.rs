@@ -181,6 +181,9 @@ impl acp::Agent for MvpAgent {
         tracing::debug!(target: "sampling_log", "Received initialize request");
         xai_grok_telemetry::unified_log::info("agent initialized", None, None);
         self.start_subagent_coordinator();
+        if self.cfg.borrow().remote_settings.is_none() {
+            self.spawn_settings_reapply();
+        }
         let (auto_gc_policy, run_auto_gc) = {
             let cfg = self.cfg.borrow();
             let has_remote = cfg.remote_settings.is_some();
@@ -419,7 +422,14 @@ impl acp::Agent for MvpAgent {
         );
         let mut has_cached_token = init_has_current;
         if !init_has_current && init_is_expired {
-            let refreshed = self.auth_manager.auth().await.is_ok();
+            let refreshed = matches!(
+                tokio::time::timeout(
+                    crate::http::STARTUP_AUTH_REFRESH_TIMEOUT,
+                    self.auth_manager.auth(),
+                )
+                .await,
+                Ok(Ok(_))
+            );
             if refreshed {
                 tracing::debug!(
                     auth_type = ?self.auth_type(),
@@ -873,10 +883,9 @@ impl acp::Agent for MvpAgent {
                         .authenticate_after_cached_token_unavailable(arguments)
                         .await;
                 }
-                self.refresh_remote_settings(&auth).await;
-                self.emit_settings_update_notification();
                 self.enforce_grok_code_access(&auth).await;
                 self.maybe_sync_bundle_in_background(false);
+                let auth_for_settings = auth.clone();
                 {
                     let mut sampling_config = self.sampling_config.borrow_mut();
                     sampling_config.api_key = Some(auth.key);
@@ -898,7 +907,7 @@ impl acp::Agent for MvpAgent {
                     auth_method: "cached_token".to_string(),
                     user_id: uid,
                 });
-                self.maybe_fetch_post_auth_settings().await;
+                self.spawn_post_auth_settings(auth_for_settings);
                 Ok(self.auth_response_with_meta())
             }
             auth_method::GROK_COM_METHOD_ID | auth_method::OIDC_METHOD_ID => {
@@ -1022,8 +1031,6 @@ impl acp::Agent for MvpAgent {
                     );
                 }
                 self.auth_manager.hot_swap(auth.clone());
-                self.refresh_remote_settings(&auth).await;
-                self.emit_settings_update_notification();
                 self.enforce_grok_code_access(&auth).await;
                 self.maybe_sync_bundle_in_background(false);
                 tokio::task::spawn_local(
@@ -1044,7 +1051,7 @@ impl acp::Agent for MvpAgent {
                     auth_method: arguments.method_id.0.as_ref().to_string(),
                     user_id: Some(auth.user_id.clone()),
                 });
-                self.maybe_fetch_post_auth_settings().await;
+                self.spawn_post_auth_settings(auth.clone());
                 Ok(self.auth_response_with_meta())
             }
             _ => {
@@ -1076,9 +1083,7 @@ impl acp::Agent for MvpAgent {
         if let Err(error) = self.models_manager.refresh_codex_models(false).await {
             tracing::warn!(%error, "Codex model catalog refresh failed during new session; keeping cached/embedded models");
         }
-        if let Ok(auth) = self.auth_manager.auth().await {
-            self.refresh_settings_and_reapply(&auth).await;
-        }
+        self.spawn_settings_reapply();
         let cwd = AbsPathBuf::new(arguments.cwd.clone())
             .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
         let remote_settings = self.cfg.borrow().remote_settings.clone();
@@ -1161,7 +1166,28 @@ impl acp::Agent for MvpAgent {
         let mut disallowed_custom: Option<String> = None;
         let session_initial_model = chat_initial_model(is_chat_kind, custom_model_id);
         let build_custom_model_id = if is_chat_kind { None } else { custom_model_id };
+        let campaign_nudge = if is_chat_kind {
+            None
+        } else {
+            crate::util::config::campaign_driven_models_default().filter(|c| {
+                build_custom_model_id.is_none()
+                    || build_custom_model_id == c.pre_campaign.as_deref()
+                    || build_custom_model_id == Some(c.value.as_str())
+            })
+        };
+        let campaign_nudged = campaign_nudge.is_some();
+        if let Some(c) = &campaign_nudge {
+            tracing::info!(
+                model = %c.value,
+                requested = ?custom_model_id,
+                "new_session: applying campaign-driven default model"
+            );
+        }
+        let build_custom_model_id: Option<String> = campaign_nudge
+            .map(|c| c.value)
+            .or_else(|| build_custom_model_id.map(str::to_owned));
         let resolved_custom_model = build_custom_model_id
+            .as_deref()
             .and_then(|custom_model| match self
                 .resolve_model_id(&acp::ModelId::new(custom_model))
             {
@@ -1179,7 +1205,9 @@ impl acp::Agent for MvpAgent {
                         requested_model = custom_model,
                         "Requested model not allowed by allowed_models; falling back to current default model"
                     );
-                    disallowed_custom = Some(custom_model.to_string());
+                    if !campaign_nudged {
+                        disallowed_custom = Some(custom_model.to_string());
+                    }
                     None
                 }
                 Err(_) => {
@@ -1263,7 +1291,7 @@ impl acp::Agent for MvpAgent {
                     &session_info,
                     model_id,
                     summary_client,
-                    self.storage_mode,
+                    self.storage_mode.get(),
                     Some(self.auth_manager.clone()),
                     relay_sync,
                     Some(self.gateway.clone()),
@@ -1652,7 +1680,7 @@ impl acp::Agent for MvpAgent {
         let (persistence_info, persistence) = crate::session::persistence::load_light(
                 &session_info,
                 summary_client,
-                self.storage_mode,
+                self.storage_mode.get(),
                 Some(self.auth_manager.clone()),
                 backend.as_ref(),
                 relay_sync,

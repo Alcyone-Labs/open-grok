@@ -5471,6 +5471,7 @@ pub(crate) fn execute(
                                 &auth,
                                 None,
                             )
+                            .into_option()
                         })
                         .await
                         .ok()

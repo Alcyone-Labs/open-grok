@@ -394,6 +394,11 @@ pub enum PersistenceMsg {
     /// Routed back through the persistence channel so the storage write
     /// stays sequential with other summary.json mutations.
     GeneratedTitle(String),
+    /// Enable remote writeback for a session created `Local` before remote
+    /// settings resolved (non-blocking startup); backfills its local history.
+    UpgradeToWriteback {
+        auth_manager: Arc<crate::auth::AuthManager>,
+    },
     Flush,
     /// Flush all pending writes, then signal the caller once the flush is complete.
     /// Unlike `Flush` (fire-and-forget), this is a **sync barrier**: the caller's
@@ -1771,6 +1776,9 @@ struct SessionPersistence {
     provider_boundary: ProviderBoundary,
     current_provider: ModelProvider,
     remote_sync: Option<RemoteSync>,
+    /// True only for sessions created this run (not resumed); gates the
+    /// writeback backfill so a resumed, already-synced session isn't re-sent.
+    created_fresh: bool,
     /// WebSocket-based relay sync for real-time session sharing.
     /// This streams updates to the relay backend in addition to local persistence.
     relay_sync: Option<crate::relay::RelaySync>,
@@ -1907,6 +1915,61 @@ impl SessionPersistence {
         }
     }
 
+    /// Enable writeback for a session created `Local` before settings resolved:
+    /// build the sync and (for a fresh session) backfill its local-only history.
+    /// No-op once syncing, so a repeat upgrade is harmless.
+    async fn upgrade_to_writeback(&mut self, auth_manager: Arc<crate::auth::AuthManager>) {
+        if self.remote_sync.is_some() {
+            return;
+        }
+        // Non-xAI export boundary: never re-open writeback after Codex/Kimi/etc.
+        if !self.provider_boundary.allows_xai_export() {
+            tracing::info!(
+                session_id = %self.info.id,
+                "writeback upgrade skipped: provider export boundary closed"
+            );
+            return;
+        }
+        // Flush the merge-pending notification so the backfill re-reads it.
+        self.flush_pending().await;
+        let persisted = match self.storage.load_session(&self.info).await {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                tracing::warn!(%error, "writeback upgrade: failed to load session for backfill");
+                return;
+            }
+        };
+        let remote_sync = match init_remote_sync(
+            &persisted.summary,
+            StorageMode::Writeback,
+            Some(auth_manager),
+        ) {
+            Ok(Some(remote_sync)) => remote_sync,
+            // ZDR team, or nothing to do: leave the session local-only.
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "writeback upgrade: remote sync init failed");
+                return;
+            }
+        };
+        // Fresh-only backfill; see `backfill_updates_to_sync`.
+        let backfilled =
+            backfill_updates_to_sync(self.created_fresh, persisted.updates, &remote_sync);
+        if self.created_fresh {
+            tracing::info!(
+                session_id = %self.info.id,
+                backfilled,
+                "writeback enabled after settings arrival; backfilled local-only history",
+            );
+        } else {
+            tracing::info!(
+                session_id = %self.info.id,
+                "writeback enabled for resumed session; forward-only, no backfill",
+            );
+        }
+        self.remote_sync = Some(remote_sync);
+    }
+
     fn finish_pending_append(
         notification: acp::SessionNotification,
         result: Result<(), crate::session::storage::AppendUpdateError>,
@@ -2007,6 +2070,9 @@ impl SessionPersistence {
                 spawn_worktree_touch(&self.info);
             }
             match msg {
+                PersistenceMsg::UpgradeToWriteback { auth_manager } => {
+                    self.upgrade_to_writeback(auth_manager).await;
+                }
                 PersistenceMsg::Flush => {
                     self.flush_pending().await;
                 }
@@ -2438,6 +2504,29 @@ fn collect_mcp_stderr_logs(files: &mut Vec<CopiedSessionFile>) {
 /// Recursively collect all files from `dir` into `files`, using paths relative to `base`.
 /// This captures subdirectories like `prompts/` which contain large-prompt files
 /// referenced by truncated chat history entries.
+/// Queue a fresh session's local-only ACP history to `remote_sync` (xAI updates
+/// are never synced), returning the count. Resumed sessions are forward-only:
+/// their prior history may already be on the backend (which appends by content,
+/// no per-message id), so re-sending would duplicate.
+fn backfill_updates_to_sync(
+    created_fresh: bool,
+    updates: Vec<SessionUpdate>,
+    remote_sync: &RemoteSync,
+) -> usize {
+    if !created_fresh {
+        return 0;
+    }
+    let mut backfilled = 0usize;
+    for update in updates {
+        if let SessionUpdate::Acp(notification) = update {
+            remote_sync.queue(*notification);
+            backfilled += 1;
+        }
+    }
+    remote_sync.flush();
+    backfilled
+}
+
 fn collect_session_files_recursive(base: &Path, dir: &Path, files: &mut Vec<CopiedSessionFile>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -2702,6 +2791,7 @@ pub(crate) async fn new(
             provider_boundary,
             current_provider,
             remote_sync: remote_sync.clone(),
+            created_fresh: true,
             relay_sync,
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
@@ -2779,6 +2869,7 @@ pub async fn new_with_explicit_dir(
             provider_boundary,
             current_provider,
             remote_sync: None,
+            created_fresh: false,
             relay_sync: None,
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
@@ -2930,6 +3021,7 @@ pub(crate) async fn load(
             provider_boundary,
             current_provider,
             remote_sync: remote_sync.clone(),
+            created_fresh: false,
             relay_sync,
             summary: summary_gen,
             registry_title_sync,
@@ -3039,6 +3131,7 @@ pub(crate) async fn load_light(
             provider_boundary,
             current_provider,
             remote_sync: remote_sync.clone(),
+            created_fresh: false,
             relay_sync,
             summary: summary_gen,
             registry_title_sync,
