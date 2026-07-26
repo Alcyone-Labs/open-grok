@@ -80,6 +80,13 @@ jobs:
             throw 'Checked-out commit is not anchored by the requested tag.'
           }
 
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ runner.os }}-${{ runner.arch }}
+          cache-on-failure: true
+          cache-workspace-crates: true
+
       - name: Build and verify Windows release
         shell: pwsh
         run: .\scripts\build-windows-release.ps1
@@ -111,6 +118,13 @@ jobs:
           version="$(tr -d '\r\n' < OPEN_GROK_VERSION)"
           test "v${version}" = '${{ needs.resolve.outputs.tag }}'
           git tag --points-at HEAD | grep -Fx '${{ needs.resolve.outputs.tag }}'
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ runner.os }}-${{ runner.arch }}
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Install pinned ripgrep
         shell: bash

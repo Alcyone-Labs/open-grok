@@ -120,6 +120,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     let x_search_enabled = xai_grok_shell::util::config::load_x_search_config_sync().enabled;
     let antigravity_skip_permissions =
         xai_grok_shell::util::config::load_antigravity_skip_permissions_sync();
+    let local_feature_flags = xai_grok_shell::util::config::load_local_feature_flags_sync();
     for agent in app.agents.values_mut() {
         // Walk both `Settings` and `ResetSettingsConfirm` — the
         // confirm dialog embeds settings state that must stay fresh
@@ -170,6 +171,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 auto_mode_gate: auto_mode_gate_from_app,
                 ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
                 voice_stt_language: voice_stt_language_from_app.clone(),
+                local_feature_flags: local_feature_flags.clone(),
             };
         }
     }
@@ -344,6 +346,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
         auto_mode_gate: auto_mode_gate_from_app,
         ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
         voice_stt_language: voice_stt_language_from_app,
+        local_feature_flags: xai_grok_shell::util::config::load_local_feature_flags_sync(),
     };
     let mut state = Box::new(SettingsModalState::new(
         registry,
@@ -926,6 +929,34 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         auto_mode_gate: app.auto_mode_gate,
         ask_user_question_timeout_enabled: app.ask_user_question_timeout_enabled,
         voice_stt_language: app.voice_config.language.clone(),
+        local_feature_flags: xai_grok_shell::util::config::load_local_feature_flags_sync(),
+    }
+}
+
+pub(super) fn update_open_settings_local_feature_flag(
+    app: &mut AppView,
+    key: crate::settings::SettingKey,
+    value: bool,
+) {
+    use crate::views::modal::ActiveModal;
+    for agent in app.agents.values_mut() {
+        let state = match agent.active_modal.as_mut() {
+            Some(ActiveModal::Settings { state }) => Some(state.as_mut()),
+            Some(ActiveModal::ResetSettingsConfirm { settings_state, .. }) => {
+                Some(settings_state.as_mut())
+            }
+            _ => None,
+        };
+        if let Some(state) = state {
+            state.pager_snapshot.local_feature_flags.insert(key, value);
+        }
+    }
+    if let Some(state) = app
+        .dashboard
+        .as_mut()
+        .and_then(|dashboard| dashboard.settings_modal.as_mut())
+    {
+        state.pager_snapshot.local_feature_flags.insert(key, value);
     }
 }
 
@@ -948,6 +979,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
             SettingValue::Enum(choice),
         ) => Some(Action::SetWebSearchSource { key, choice }),
         ("toolset.x_search.enabled", SettingValue::Bool(b)) => Some(Action::SetXSearchEnabled(*b)),
+        (key, SettingValue::Bool(b)) if crate::settings::is_local_feature_flag(key) => {
+            Some(Action::SetLocalFeatureFlag { key, enabled: *b })
+        }
         ("compact_mode", SettingValue::Bool(b)) => Some(Action::SetCompactMode(*b)),
         ("show_timestamps", SettingValue::Bool(b)) => Some(Action::SetTimestamps(*b)),
         ("show_timeline", SettingValue::Bool(b)) => Some(Action::SetTimeline(*b)),
@@ -1221,6 +1255,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             SettingValue::Enum(_),
         )
         | ("toolset.x_search.enabled" | "antigravity_skip_permissions", SettingValue::Bool(_)) => {}
+        (key, SettingValue::Bool(value)) if crate::settings::is_local_feature_flag(key) => {
+            update_open_settings_local_feature_flag(app, key, *value);
+        }
         ("compact_mode", SettingValue::Bool(b)) => set_compact_mode_inner(app, *b),
         ("show_timestamps", SettingValue::Bool(b)) => set_timestamps_inner(app, *b),
         ("show_timeline", SettingValue::Bool(b)) => set_timeline_inner(app, *b),

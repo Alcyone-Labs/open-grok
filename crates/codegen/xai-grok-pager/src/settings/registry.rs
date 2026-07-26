@@ -373,6 +373,10 @@ pub struct PagerLocalSnapshot {
     /// language actually in effect when `[ui].voice_stt_language` is unset but
     /// an explicit `[voice].language` applies.
     pub voice_stt_language: String,
+    /// Restart-required local feature flags read from effective config.toml.
+    /// The settings setter updates this map optimistically while persistence
+    /// runs, then the success/failure path refreshes it from disk.
+    pub local_feature_flags: std::collections::BTreeMap<SettingKey, bool>,
 }
 
 impl Default for PagerLocalSnapshot {
@@ -410,8 +414,16 @@ impl Default for PagerLocalSnapshot {
             auto_mode_gate: false,
             ask_user_question_timeout_enabled: None,
             voice_stt_language: xai_grok_voice::STT_LANGUAGE_DEFAULT.to_string(),
+            local_feature_flags: xai_grok_shell::util::config::LOCAL_FEATURE_FLAG_SPECS
+                .iter()
+                .map(|spec| (spec.key, spec.default))
+                .collect(),
         }
     }
+}
+
+pub fn is_local_feature_flag(key: SettingKey) -> bool {
+    xai_grok_shell::util::config::local_feature_flag_default(key).is_some()
 }
 
 /// Canonicalize a raw voice-capture mode to a registry choice. Case-insensitive
@@ -609,6 +621,14 @@ pub fn current_value_for(
     ui: &UiConfig,
     pager: &PagerLocalSnapshot,
 ) -> Option<SettingValue> {
+    if is_local_feature_flag(key) {
+        let value = pager
+            .local_feature_flags
+            .get(key)
+            .copied()
+            .or_else(|| xai_grok_shell::util::config::local_feature_flag_default(key))?;
+        return Some(SettingValue::Bool(value));
+    }
     match key {
         // SHARED — UiConfig source of truth, pager keeps a cache.
         "compact_mode" => Some(SettingValue::Bool(ui.compact_mode)),
@@ -1457,6 +1477,13 @@ mod tests {
                         default,
                         "Antigravity full access defaults ON (agy skip-permissions); \
                          the row is the read-only opt-out"
+                    );
+                }
+                (key, SettingKind::Bool { default }) if is_local_feature_flag(key) => {
+                    assert_eq!(
+                        Some(*default),
+                        xai_grok_shell::util::config::local_feature_flag_default(key),
+                        "local feature flag registry default drifted for {key}",
                     );
                 }
 

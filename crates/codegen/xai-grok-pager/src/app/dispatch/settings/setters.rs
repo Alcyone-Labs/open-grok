@@ -1,6 +1,8 @@
 //! Individual setting setters with persistence effects and toasts.
 
-use super::ui::{refresh_open_settings_modals, save_success_toast};
+use super::ui::{
+    refresh_open_settings_modals, save_success_toast, update_open_settings_local_feature_flag,
+};
 use crate::app::actions::Effect;
 use crate::app::app_view::{ActiveView, AppView, PrimaryProvider};
 use crate::settings::SecretInput;
@@ -612,6 +614,33 @@ pub(in crate::app::dispatch) fn set_x_search_enabled(app: &mut AppView, new: boo
     app.show_toast(&save_success_toast("X search", new));
     vec![Effect::PersistSetting {
         key: "toolset.x_search.enabled",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_local_feature_flag(
+    app: &mut AppView,
+    key: crate::settings::SettingKey,
+    new: bool,
+) -> Vec<Effect> {
+    let Some(prev) = xai_grok_shell::util::config::load_local_feature_flag_sync(key) else {
+        tracing::error!(target: "settings", key, "unsupported local feature flag");
+        return vec![];
+    };
+    update_open_settings_local_feature_flag(app, key, new);
+    tracing::info!(target: "settings", key, value = new, "setting changed");
+    let label = app
+        .settings_registry
+        .find(key)
+        .map(|meta| meta.label)
+        .unwrap_or(key);
+    app.show_toast(&format!(
+        "{} (restart to apply)",
+        save_success_toast(label, new)
+    ));
+    vec![Effect::PersistSetting {
+        key,
         value: crate::settings::SettingValue::Bool(new),
         rollback_value: crate::settings::SettingValue::Bool(prev),
     }]

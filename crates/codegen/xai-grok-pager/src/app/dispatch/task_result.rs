@@ -42,7 +42,7 @@ use super::session::load::{
     handle_session_load_failed, handle_session_loaded, handle_session_restore_failed,
     handle_session_restored, handle_session_search_debounce_expired, remove_session_from_pickers,
 };
-use super::settings::ui::apply_setting_rollback;
+use super::settings::ui::{apply_setting_rollback, refresh_open_settings_modals};
 use super::status::{
     commit_session_usage_block, handle_coding_data_sharing_failed,
     handle_coding_data_sharing_updated, handle_context_info_complete, scrub_error_for_toast,
@@ -2653,6 +2653,9 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::SettingPersisted { key, value } => {
             tracing::trace!(target: "settings", ?key, ?value, "setting persisted");
+            if crate::settings::is_local_feature_flag(key) {
+                refresh_open_settings_modals(app);
+            }
             vec![]
         }
         TaskResult::SettingPersistFailed {

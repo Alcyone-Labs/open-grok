@@ -1056,6 +1056,9 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "show_tips" => Some(Action::SetShowTips(new)),
         "auto_update" => Some(Action::SetAutoUpdate(new)),
         "display_refresh_auto_cadence" => Some(Action::SetDisplayRefreshAutoCadence(new)),
+        _ if crate::settings::is_local_feature_flag(key) => {
+            Some(Action::SetLocalFeatureFlag { key, enabled: new })
+        }
         _ => None,
     }
 }

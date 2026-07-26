@@ -1121,6 +1121,7 @@ fn every_setting_has_action_for_reset_arm() {
                 || meta.key.starts_with("toolset.web_search_source.")
                 || meta.key == "toolset.x_search.enabled"
                 || meta.key == "antigravity_skip_permissions"
+                || crate::settings::is_local_feature_flag(meta.key)
             {
                 // Secret values intentionally are not read into AppView/test
                 // fixtures. The action-arm assertion above covers reset wiring;
@@ -1257,6 +1258,47 @@ fn code_mode_setter_persists_and_rolls_back_with_restart_toast() {
     );
     assert!(rollback_effects.is_empty());
     assert_eq!(app.current_ui.code_mode, Some(ToolModePreference::Direct));
+}
+
+#[test]
+fn local_feature_flag_setter_updates_modal_and_persists() {
+    use crate::views::modal::ActiveModal;
+
+    let mut app = test_app_with_agent();
+    let _ = dispatch(Action::OpenSettings, &mut app);
+    let effects = dispatch(
+        Action::SetLocalFeatureFlag {
+            key: "memory.enabled",
+            enabled: true,
+        },
+        &mut app,
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistSetting {
+            key: "memory.enabled",
+            value: crate::settings::SettingValue::Bool(true),
+            rollback_value: crate::settings::SettingValue::Bool(_),
+        }]
+    ));
+    let agent = app.agents.get(&AgentId(0)).unwrap();
+    let Some(ActiveModal::Settings { state }) = agent.active_modal.as_ref() else {
+        panic!("settings modal must remain open");
+    };
+    assert_eq!(
+        state
+            .pager_snapshot
+            .local_feature_flags
+            .get("memory.enabled"),
+        Some(&true),
+    );
+    let toast = agent
+        .toast
+        .as_ref()
+        .map(|(message, _)| message.as_str())
+        .unwrap();
+    assert!(toast.contains("Memory tools: on"));
+    assert!(toast.contains("restart to apply"));
 }
 
 /// Pin the
@@ -1772,6 +1814,17 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
         "toolset.x_search.enabled" => {
             let _ = dispatch(Action::SetXSearchEnabled(false), app);
+        }
+        key if crate::settings::is_local_feature_flag(key) => {
+            let default = xai_grok_shell::util::config::local_feature_flag_default(key)
+                .expect("recognized local feature flag must have a default");
+            let _ = dispatch(
+                Action::SetLocalFeatureFlag {
+                    key,
+                    enabled: !default,
+                },
+                app,
+            );
         }
         other => {
             panic!(

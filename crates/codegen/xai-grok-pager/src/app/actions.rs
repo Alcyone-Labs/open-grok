@@ -596,6 +596,12 @@ pub enum Action {
     },
     /// Commit `[toolset.x_search].enabled`.
     SetXSearchEnabled(bool),
+    /// Commit one supported restart-required local feature flag. `key` is a
+    /// strict allowlisted dotted TOML path from `LOCAL_FEATURE_FLAG_SPECS`.
+    SetLocalFeatureFlag {
+        key: crate::settings::SettingKey,
+        enabled: bool,
+    },
     /// Save a service-specific Kimi API key from the dedicated masked editor.
     /// `SecretInput` redacts `Debug` and zeroizes its allocation on drop.
     SetKimiApiKey {

@@ -1,5 +1,138 @@
-use super::persist::update_config;
+use super::mcp::user_config_path;
+use super::persist::{
+    atomic_write_string, lock_config_writes, read_to_string_or_empty, update_config,
+};
 use anyhow::Result;
+use std::collections::BTreeMap;
+use toml::Value as TomlValue;
+use toml::map::Map as TomlMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalFeatureFlagSpec {
+    pub key: &'static str,
+    pub default: bool,
+}
+
+pub const LOCAL_FEATURE_FLAG_SPECS: &[LocalFeatureFlagSpec] = &[
+    LocalFeatureFlagSpec {
+        key: "memory.enabled",
+        default: false,
+    },
+    LocalFeatureFlagSpec {
+        key: "memory.dream.enabled",
+        default: true,
+    },
+    LocalFeatureFlagSpec {
+        key: "features.lsp_tools",
+        default: false,
+    },
+    LocalFeatureFlagSpec {
+        key: "features.web_fetch",
+        default: false,
+    },
+    LocalFeatureFlagSpec {
+        key: "features.two_pass_compaction",
+        default: false,
+    },
+    LocalFeatureFlagSpec {
+        key: "features.non_git_warning",
+        default: false,
+    },
+    LocalFeatureFlagSpec {
+        key: "doom_loop_recovery.enabled",
+        default: false,
+    },
+    LocalFeatureFlagSpec {
+        key: "features.subagent_worktree_snapshot",
+        default: false,
+    },
+];
+
+pub fn local_feature_flag_default(key: &str) -> Option<bool> {
+    LOCAL_FEATURE_FLAG_SPECS
+        .iter()
+        .find(|spec| spec.key == key)
+        .map(|spec| spec.default)
+}
+
+fn read_nested_bool(root: &TomlValue, key: &str) -> Option<bool> {
+    key.split('.')
+        .try_fold(root, |value, part| value.get(part))
+        .and_then(TomlValue::as_bool)
+}
+
+pub fn load_local_feature_flag_sync(key: &str) -> Option<bool> {
+    let default = local_feature_flag_default(key)?;
+    let value = super::load_effective_config()
+        .ok()
+        .as_ref()
+        .and_then(|root| read_nested_bool(root, key))
+        .unwrap_or(default);
+    Some(value)
+}
+
+pub fn load_local_feature_flags_sync() -> BTreeMap<&'static str, bool> {
+    let root = super::load_effective_config().ok();
+    LOCAL_FEATURE_FLAG_SPECS
+        .iter()
+        .map(|spec| {
+            let value = root
+                .as_ref()
+                .and_then(|root| read_nested_bool(root, spec.key))
+                .unwrap_or(spec.default);
+            (spec.key, value)
+        })
+        .collect()
+}
+
+fn set_nested_bool(root: &mut TomlValue, key: &str, value: bool) {
+    let mut parts = key.split('.').peekable();
+    let mut current = root;
+    while let Some(part) = parts.next() {
+        if parts.peek().is_none() {
+            current
+                .as_table_mut()
+                .expect("local feature flag parent must be a table")
+                .insert(part.to_string(), TomlValue::Boolean(value));
+            return;
+        }
+        let table = current
+            .as_table_mut()
+            .expect("local feature flag parent must be a table");
+        current = table
+            .entry(part.to_string())
+            .or_insert_with(|| TomlValue::Table(TomlMap::new()));
+        if !current.is_table() {
+            *current = TomlValue::Table(TomlMap::new());
+        }
+    }
+}
+
+pub async fn set_local_feature_flag(key: &'static str, value: bool) -> Result<()> {
+    if local_feature_flag_default(key).is_none() {
+        anyhow::bail!("unsupported local feature flag `{key}`");
+    }
+    let _guard = lock_config_writes().await;
+    let path = user_config_path();
+    let contents = read_to_string_or_empty(&path)?;
+    let mut root = if contents.trim().is_empty() {
+        TomlValue::Table(TomlMap::new())
+    } else {
+        toml::from_str::<TomlValue>(&contents).map_err(|parse_err| {
+            anyhow::anyhow!(
+                "refusing to overwrite unparseable {}: {}; save a backup and fix the syntax error before retrying",
+                path.display(),
+                parse_err,
+            )
+        })?
+    };
+    if !root.is_table() {
+        root = TomlValue::Table(TomlMap::new());
+    }
+    set_nested_bool(&mut root, key, value);
+    atomic_write_string(&path, &toml::to_string_pretty(&root)?)?;
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 
@@ -441,5 +574,52 @@ mod tests {
             crate::kimi_models::KimiApiEndpoint::from_canonical("coding"),
             None
         );
+    }
+
+    #[test]
+    fn local_feature_flag_specs_have_stable_defaults() {
+        assert_eq!(local_feature_flag_default("memory.enabled"), Some(false));
+        assert_eq!(
+            local_feature_flag_default("memory.dream.enabled"),
+            Some(true)
+        );
+        assert_eq!(
+            local_feature_flag_default("features.lsp_tools"),
+            Some(false)
+        );
+        assert_eq!(
+            local_feature_flag_default("features.web_fetch"),
+            Some(false)
+        );
+        assert_eq!(
+            local_feature_flag_default("features.two_pass_compaction"),
+            Some(false)
+        );
+        assert_eq!(
+            local_feature_flag_default("features.non_git_warning"),
+            Some(false)
+        );
+        assert_eq!(
+            local_feature_flag_default("doom_loop_recovery.enabled"),
+            Some(false)
+        );
+        assert_eq!(
+            local_feature_flag_default("features.subagent_worktree_snapshot"),
+            Some(false)
+        );
+        assert_eq!(local_feature_flag_default("features.unknown"), None);
+    }
+
+    #[test]
+    fn nested_feature_flag_write_preserves_siblings_and_repairs_scalars() {
+        let mut root: TomlValue = toml::from_str(
+            "[features]\nweb_fetch = false\nlsp_tools = true\n[memory]\ndream = false\n",
+        )
+        .unwrap();
+        set_nested_bool(&mut root, "features.web_fetch", true);
+        set_nested_bool(&mut root, "memory.dream.enabled", true);
+        assert_eq!(read_nested_bool(&root, "features.web_fetch"), Some(true));
+        assert_eq!(read_nested_bool(&root, "features.lsp_tools"), Some(true));
+        assert_eq!(read_nested_bool(&root, "memory.dream.enabled"), Some(true));
     }
 }

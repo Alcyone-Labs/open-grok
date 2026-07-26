@@ -806,6 +806,14 @@ pub(crate) async fn persist_setting(
         format!("persist_setting({key}) expected {expected}, got {got:?}")
     }
     match key {
+        key if crate::settings::is_local_feature_flag(key) => {
+            let SettingValue::Bool(enabled) = value else {
+                return Err(kind_mismatch(key, "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_local_feature_flag(key, enabled)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "toolset.web_search_source.xai"
         | "toolset.web_search_source.codex"
         | "toolset.web_search_source.kimi_platform"
