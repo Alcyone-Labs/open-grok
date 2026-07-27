@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use super::state::{
     CONTENT_MIN_WIDTH, MAX_THOUGHTS_WIDTH_WIDENED_MARGIN, MODAL_TITLE, RowEntry,
     STANDARD_MAX_WIDTH, SettingsModalState, SettingsMode, SettingsModeKind,
-    TITLE_LEADING_DECORATION_W, effective_enum_choices, group_children,
+    TITLE_LEADING_DECORATION_W, dynamic_group_choices, effective_enum_choices, group_children,
 };
 use crate::render::line_utils::truncate_str;
 use crate::settings::{
@@ -631,7 +631,10 @@ pub(super) fn render_rows(
 
                 // Group rows carry no scalar value; render a chevron row that
                 // opens the sub-sheet (skips the value/edited machinery below).
-                if matches!(meta.kind, SettingKind::Group { .. }) {
+                if matches!(
+                    meta.kind,
+                    SettingKind::Group { .. } | SettingKind::DynamicMultiSelect { .. }
+                ) {
                     let is_hovered = hover_row_snapshot == Some(row_idx);
                     let value_rect = render_setting_group_row(
                         buf,
@@ -831,7 +834,10 @@ fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> 
                 };
                 // Group rows carry no value; height = chevron row + the expanded
                 // description (cap 8), agreeing with the forward render loop.
-                if matches!(meta.kind, SettingKind::Group { .. }) {
+                if matches!(
+                    meta.kind,
+                    SettingKind::Group { .. } | SettingKind::DynamicMultiSelect { .. }
+                ) {
                     let mut h: u16 = 1;
                     if state.expanded_keys.contains(key) {
                         h = h.saturating_add(wrapped_description_height(
@@ -1292,6 +1298,12 @@ fn render_picking_group(
         return Vec::new();
     };
     let children = group_children(state, group_key);
+    let dynamic_choices = dynamic_group_choices(state, group_key);
+    let item_count = if dynamic_choices.is_empty() {
+        children.len()
+    } else {
+        dynamic_choices.len()
+    };
     if area.width == 0 || area.height == 0 {
         return Vec::new();
     }
@@ -1312,13 +1324,26 @@ fn render_picking_group(
     let area_end = area.y + area.height;
 
     // ── Child toggle rows. ────────────────────────────────────────
-    let mut rects: Vec<Rect> = vec![Rect::default(); children.len()];
-    for (i, child_key) in children.iter().enumerate() {
+    let mut rects: Vec<Rect> = vec![Rect::default(); item_count];
+    let visible_rows = usize::from(area_end.saturating_sub(y));
+    let start_idx = child_idx.saturating_add(1).saturating_sub(visible_rows);
+    for i in start_idx..item_count {
         if y >= area_end {
             break;
         }
-        let Some(child_meta) = state.registry.find(child_key) else {
-            continue;
+        let (label, on) = if let Some(choice) = dynamic_choices.get(i) {
+            (choice.display.as_str(), choice.selected)
+        } else {
+            let Some(child_key) = children.get(i) else {
+                continue;
+            };
+            let Some(child_meta) = state.registry.find(child_key) else {
+                continue;
+            };
+            (
+                child_meta.label,
+                matches!(state.value_for(child_key), Some(SettingValue::Bool(true))),
+            )
         };
         let is_focused = i == child_idx;
         let is_hovered = !is_focused && state.hover_row == Some(i);
@@ -1351,8 +1376,6 @@ fn render_picking_group(
             Style::default().fg(theme.text_primary).bg(bg)
         };
 
-        // Value read live from the snapshot (refreshed after each toggle).
-        let on = matches!(state.value_for(child_key), Some(SettingValue::Bool(true)));
         let value_text = if on { "on" } else { "off" };
         let value_style = if on {
             Style::default().fg(theme.accent_user).bg(bg)
@@ -1382,10 +1405,10 @@ fn render_picking_group(
             .max(label_x);
         if value_x > label_x {
             let label_room = (value_x - label_x).saturating_sub(1) as usize;
-            let label_text: std::borrow::Cow<'_, str> = if child_meta.label.width() <= label_room {
-                std::borrow::Cow::Borrowed(child_meta.label)
+            let label_text: std::borrow::Cow<'_, str> = if label.width() <= label_room {
+                std::borrow::Cow::Borrowed(label)
             } else {
-                std::borrow::Cow::Owned(truncate_str(child_meta.label, label_room))
+                std::borrow::Cow::Owned(truncate_str(label, label_room))
             };
             let label_w = (label_text.width() as u16).min((value_x - label_x).saturating_sub(1));
             buf.set_span(

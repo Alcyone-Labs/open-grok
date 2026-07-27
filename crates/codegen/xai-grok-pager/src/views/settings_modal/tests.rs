@@ -901,6 +901,9 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             "kimi_code_api_key",
             // Fireworks AI isolated credential.
             "fireworks_api_key",
+            // OpenCode Go isolated credential and opt-in discovered models.
+            "opencode_go_api_key",
+            "opencode_go_models",
             "toolset.perplexity_web_search.enabled",
             "perplexity_api_key",
             "toolset.web_search_source.xai",
@@ -908,6 +911,7 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             "toolset.web_search_source.kimi_platform",
             "toolset.web_search_source.kimi_code",
             "toolset.web_search_source.fireworks",
+            "toolset.web_search_source.opencode_go",
             "toolset.x_search.enabled",
             // Auxiliary model selectors persist IDs while rendering names.
             "recap_model",

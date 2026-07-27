@@ -1436,6 +1436,10 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                 kimi_api_key_status: crate::settings::SecretStatus::Missing,
                 kimi_code_api_key_status: crate::settings::SecretStatus::Missing,
                 fireworks_api_key_status: crate::settings::SecretStatus::Missing,
+                opencode_go_api_key_status:
+                    crate::app::dispatch::settings::ui::opencode_go_api_key_status(),
+                opencode_go_models: app.opencode_go_models.clone(),
+                opencode_go_enabled_models: app.opencode_go_enabled_models.clone(),
                 perplexity_web_search_enabled: app.perplexity_web_search_enabled,
                 web_search_source: xai_grok_shell::util::config::load_web_search_source_sync(),
                 x_search_enabled: xai_grok_shell::util::config::load_x_search_config_sync().enabled,

@@ -12,6 +12,7 @@ pub struct LoginCommand;
 pub(crate) fn provider_items(
     kimi_status: Option<crate::settings::SecretStatus>,
     fireworks_status: Option<crate::settings::SecretStatus>,
+    opencode_go_status: Option<crate::settings::SecretStatus>,
 ) -> Vec<ArgItem> {
     let api_key_description = |status: Option<crate::settings::SecretStatus>| match status {
         Some(status) => format!("API key · {}", status.display()),
@@ -19,6 +20,7 @@ pub(crate) fn provider_items(
     };
     let kimi_description = api_key_description(kimi_status);
     let fireworks_description = api_key_description(fireworks_status);
+    let opencode_go_description = api_key_description(opencode_go_status);
     vec![
         ArgItem {
             display: "xAI Grok".to_owned(),
@@ -44,6 +46,12 @@ pub(crate) fn provider_items(
             insert_text: "fireworks".to_owned(),
             description: fireworks_description,
         },
+        ArgItem {
+            display: "OpenCode Go".to_owned(),
+            match_text: "opencode go api key dynamic models".to_owned(),
+            insert_text: "opencode-go".to_owned(),
+            description: opencode_go_description,
+        },
     ]
 }
 
@@ -57,8 +65,9 @@ pub(crate) fn provider_action(args: &str) -> Result<Action, String> {
         "codex" | "openai" | "chatgpt" => Ok(Action::LoginCodex),
         "kimi" | "moonshot" => Ok(Action::OpenKimiApiKeyEditor),
         "fireworks" => Ok(Action::OpenFireworksApiKeyEditor),
+        "opencode" | "opencode-go" | "opencode_go" | "go" => Ok(Action::OpenOpenCodeGoApiKeyEditor),
         _ => Err(format!(
-            "Unknown provider: {}. Use /login xai, /login codex, /login kimi, or /login fireworks",
+            "Unknown provider: {}. Use /login xai, /login codex, /login kimi, /login fireworks, or /login opencode-go",
             args.trim()
         )),
     }
@@ -70,11 +79,11 @@ impl SlashCommand for LoginCommand {
     }
 
     fn description(&self) -> &str {
-        "Connect xAI, OpenAI Codex, Kimi, or Fireworks AI"
+        "Connect xAI, OpenAI Codex, Kimi, Fireworks AI, or OpenCode Go"
     }
 
     fn usage(&self) -> &str {
-        "/login [xai|codex|kimi|fireworks]"
+        "/login [xai|codex|kimi|fireworks|opencode-go]"
     }
 
     fn takes_args(&self) -> bool {
@@ -86,7 +95,7 @@ impl SlashCommand for LoginCommand {
     }
 
     fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
-        Some(provider_items(None, None))
+        Some(provider_items(None, None, None))
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {

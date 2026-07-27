@@ -959,6 +959,8 @@ pub enum ModelProvider {
     Kimi,
     #[serde(alias = "fireworks_ai")]
     Fireworks,
+    #[serde(alias = "opencode-go", alias = "opencode_go")]
+    OpenCodeGo,
 }
 
 /// Provider-specific wire contract used by the Responses API.
@@ -1181,6 +1183,23 @@ impl ProviderProfile {
         xai_services: XaiServicePolicy::Denied,
     };
 
+    /// OpenCode Go routes individual models over either OpenAI-compatible Chat
+    /// Completions or Anthropic Messages while sharing one provider API key.
+    pub const OPEN_CODE_GO: Self = Self {
+        provider: ModelProvider::OpenCodeGo,
+        backends: ProviderBackends {
+            chat_completions: true,
+            responses: None,
+            messages: true,
+        },
+        code_mode_transport: CodeModeTransport::Unsupported,
+        hosted_tool_dialect: None,
+        native_web_search: false,
+        request_metadata: RequestMetadataPolicy::StandardHeadersOnly,
+        session_auth: BuiltInSessionAuthKind::ApiKeyOnly,
+        xai_services: XaiServicePolicy::Denied,
+    };
+
     pub const fn id(self) -> &'static str {
         self.provider.as_str()
     }
@@ -1203,6 +1222,10 @@ impl ProviderProfile {
 
     pub const fn is_fireworks(self) -> bool {
         self.provider.is_fireworks()
+    }
+
+    pub const fn is_open_code_go(self) -> bool {
+        self.provider.is_open_code_go()
     }
 
     pub const fn allows_xai_services(self) -> bool {
@@ -1230,6 +1253,7 @@ impl ModelProvider {
             Self::Codex => "codex",
             Self::Kimi => "kimi",
             Self::Fireworks => "fireworks",
+            Self::OpenCodeGo => "opencode_go",
         }
     }
 
@@ -1240,6 +1264,7 @@ impl ModelProvider {
             Self::Codex => "OpenAI Codex",
             Self::Kimi => "Kimi",
             Self::Fireworks => "Fireworks AI",
+            Self::OpenCodeGo => "OpenCode Go",
         }
     }
 
@@ -1259,6 +1284,10 @@ impl ModelProvider {
         matches!(self, Self::Fireworks)
     }
 
+    pub const fn is_open_code_go(self) -> bool {
+        matches!(self, Self::OpenCodeGo)
+    }
+
     /// Return the built-in provider's complete behavior policy.
     pub const fn profile(self) -> ProviderProfile {
         match self {
@@ -1266,6 +1295,7 @@ impl ModelProvider {
             Self::Codex => ProviderProfile::CODEX,
             Self::Kimi => ProviderProfile::KIMI,
             Self::Fireworks => ProviderProfile::FIREWORKS,
+            Self::OpenCodeGo => ProviderProfile::OPEN_CODE_GO,
         }
     }
 }

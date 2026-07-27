@@ -1167,6 +1167,10 @@ pub struct ModelsConfig {
     /// Remove these model IDs from the catalog entirely. Wins over `hidden_models`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_models: Option<Vec<String>>,
+    /// OpenCode Go models explicitly enabled by the user. Empty means the
+    /// remote catalog is available only to the provider management UI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opencode_go_enabled_models: Vec<String>,
     /// Fallback `agent_type` for models without a per-model override.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
@@ -3704,7 +3708,7 @@ pub fn resolve_model_list(
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
     resolve_model_list_with_provider_catalogs(
-        cfg, prefetched, None, false, None, false, None, false,
+        cfg, prefetched, None, false, None, false, None, false, None, false,
     )
 }
 
@@ -3731,6 +3735,8 @@ pub fn resolve_model_list_with_codex(
         false,
         None,
         false,
+        None,
+        false,
     )
 }
 
@@ -3746,6 +3752,8 @@ pub fn resolve_model_list_with_provider_catalogs(
     kimi_authoritative: bool,
     fireworks_remote: Option<IndexMap<String, ModelEntry>>,
     fireworks_authoritative: bool,
+    opencode_go_remote: Option<IndexMap<String, ModelEntry>>,
+    opencode_go_authoritative: bool,
 ) -> IndexMap<String, ModelEntry> {
     let mut resolved: IndexMap<String, ModelEntry> = IndexMap::new();
     let defaults =
@@ -3863,6 +3871,13 @@ pub fn resolve_model_list_with_provider_catalogs(
         fireworks_remote,
         ModelProvider::Fireworks,
         fireworks_authoritative,
+    );
+    merge_remote_provider_partition(
+        &mut resolved,
+        &defaults,
+        opencode_go_remote,
+        ModelProvider::OpenCodeGo,
+        opencode_go_authoritative,
     );
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
@@ -4519,9 +4534,10 @@ impl ConfigModelOverride {
             // into values valid for the newly selected provider.
             entry.info.api_backend = match entry.info.provider {
                 ModelProvider::Codex => ApiBackend::Responses,
-                ModelProvider::Xai | ModelProvider::Kimi | ModelProvider::Fireworks => {
-                    ApiBackend::ChatCompletions
-                }
+                ModelProvider::Xai
+                | ModelProvider::Kimi
+                | ModelProvider::Fireworks
+                | ModelProvider::OpenCodeGo => ApiBackend::ChatCompletions,
             };
             if self.base_url.is_none() {
                 entry.info.base_url.clear();
@@ -5391,6 +5407,8 @@ fn trusted_built_in_session_endpoint(provider: ModelProvider, base_url: &str) ->
             (provider.is_kimi() && crate::kimi_models::is_trusted_api_base_url(base_url))
                 || (provider.is_fireworks()
                     && crate::fireworks_models::is_trusted_api_base_url(base_url))
+                || (provider.is_open_code_go()
+                    && crate::opencode_go_models::is_trusted_api_base_url(base_url))
         }
         xai_grok_sampling_types::BuiltInSessionAuthKind::XaiSession => {
             crate::util::is_xai_api_bearer_url(base_url)
@@ -13855,6 +13873,11 @@ default = "grok-4.5"
                 "accounts/fireworks/models/deepseek-v4-pro",
             ),
             ("kimi-k2.7-code", "accounts/fireworks/models/kimi-k2p7-code"),
+            ("fireworks:kimi-k3", "accounts/fireworks/models/kimi-k3"),
+            (
+                "fireworks:kimi-k3-fast",
+                "accounts/fireworks/routers/kimi-k3-fast",
+            ),
         ] {
             let entry = defaults.get(key).expect("embedded Fireworks model");
             assert_eq!(entry.info.provider, ModelProvider::Fireworks);
@@ -13871,6 +13894,11 @@ default = "grok-4.5"
                 Some(crate::fireworks_models::FIREWORKS_API_KEY_ENV)
             );
         }
+        assert_eq!(
+            defaults["kimi-k3"].info.provider,
+            ModelProvider::Kimi,
+            "the Fireworks variants must not replace Moonshot's bare Kimi K3 key"
+        );
     }
 
     #[test]
@@ -13894,6 +13922,8 @@ default = "grok-4.5"
             false,
             Some(fireworks),
             true,
+            None,
+            false,
         );
         assert!(resolved.contains_key("grok-4.5"));
         assert!(resolved.contains_key("kimi-k3"));
@@ -14167,6 +14197,8 @@ default = "grok-4.5"
             true,
             None,
             false,
+            None,
+            false,
         );
         assert!(resolved.contains_key("grok-live"));
         assert!(resolved.contains_key("gpt-5.6-sol"));
@@ -14192,6 +14224,8 @@ default = "grok-4.5"
             false,
             Some(kimi),
             true,
+            None,
+            false,
             None,
             false,
         );

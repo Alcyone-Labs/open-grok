@@ -49,6 +49,26 @@ fn next_fireworks_operation_generation(app: &mut AppView) -> u64 {
     app.fireworks_operation_generation
 }
 
+fn remember_loaded_opencode_go_sessions(app: &mut AppView) {
+    let mut targets = Vec::new();
+    for (&agent_id, agent) in &mut app.agents {
+        if PrimaryProvider::for_current_model(&agent.session.models)
+            == Some(PrimaryProvider::OpenCodeGo)
+        {
+            agent.session.provider_rebind_pending = true;
+            targets.push(agent_id);
+        }
+    }
+    app.pending_opencode_go_rebind_agents.extend(targets);
+}
+
+fn next_opencode_go_operation_generation(app: &mut AppView) -> u64 {
+    app.opencode_go_operation_generation =
+        app.opencode_go_operation_generation.wrapping_add(1).max(1);
+    app.opencode_go_runtime_update_pending = true;
+    app.opencode_go_operation_generation
+}
+
 fn remember_loaded_perplexity_sessions(app: &mut AppView) {
     let mut targets = Vec::new();
     for (&agent_id, agent) in &mut app.agents {
@@ -211,6 +231,52 @@ pub(in crate::app::dispatch) fn clear_fireworks_api_key(app: &mut AppView) -> Ve
     vec![Effect::UpdateFireworksApiKey {
         generation,
         key: None,
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_opencode_go_api_key(
+    app: &mut AppView,
+    key: SecretInput,
+) -> Vec<Effect> {
+    remember_loaded_opencode_go_sessions(app);
+    let generation = next_opencode_go_operation_generation(app);
+    app.show_toast("Saving OpenCode Go API key and querying models…");
+    vec![Effect::UpdateOpenCodeGoApiKey {
+        generation,
+        key: Some(key),
+    }]
+}
+
+pub(in crate::app::dispatch) fn clear_opencode_go_api_key(app: &mut AppView) -> Vec<Effect> {
+    remember_loaded_opencode_go_sessions(app);
+    let generation = next_opencode_go_operation_generation(app);
+    app.show_toast("Removing OpenCode Go API key…");
+    vec![Effect::UpdateOpenCodeGoApiKey {
+        generation,
+        key: None,
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_opencode_go_enabled_models(
+    app: &mut AppView,
+    mut models: Vec<String>,
+) -> Vec<Effect> {
+    models.sort();
+    models.dedup();
+    if models == app.opencode_go_enabled_models && !app.opencode_go_runtime_update_pending {
+        return vec![];
+    }
+    remember_loaded_opencode_go_sessions(app);
+    let generation = next_opencode_go_operation_generation(app);
+    app.opencode_go_enabled_models = models.clone();
+    refresh_open_settings_modals(app);
+    app.show_toast("Updating enabled OpenCode Go models…");
+    vec![Effect::UpdateOpenCodeGoEnabledModels { generation, models }]
+}
+
+pub(in crate::app::dispatch) fn refresh_opencode_go_models(app: &mut AppView) -> Vec<Effect> {
+    vec![Effect::QueryOpenCodeGoModels {
+        generation: app.opencode_go_operation_generation,
     }]
 }
 
@@ -580,6 +646,7 @@ pub(in crate::app::dispatch) fn set_web_search_source(
             "toolset.web_search_source.codex" => WebSearchSourceTarget::Codex,
             "toolset.web_search_source.kimi_platform" => WebSearchSourceTarget::KimiPlatform,
             "toolset.web_search_source.fireworks" => WebSearchSourceTarget::Fireworks,
+            "toolset.web_search_source.opencode_go" => WebSearchSourceTarget::OpenCodeGo,
             _ => WebSearchSourceTarget::KimiCode,
         };
         xai_grok_shell::util::config::load_web_search_source_sync()

@@ -58,6 +58,11 @@ static FIREWORKS_MUTATION_QUEUE: LazyLock<KimiMutationQueue> =
     LazyLock::new(KimiMutationQueue::new);
 static NEXT_FIREWORKS_TRANSPORT_TOKEN: AtomicU64 = AtomicU64::new(0);
 static LATEST_FIREWORKS_KEY: AtomicU64 = AtomicU64::new(0);
+static OPENCODE_GO_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static OPENCODE_GO_MUTATION_QUEUE: LazyLock<KimiMutationQueue> =
+    LazyLock::new(KimiMutationQueue::new);
+static NEXT_OPENCODE_GO_TRANSPORT_TOKEN: AtomicU64 = AtomicU64::new(0);
+static LATEST_OPENCODE_GO_MUTATION: AtomicU64 = AtomicU64::new(0);
 
 /// Admission queue for Kimi mutations.
 ///
@@ -424,6 +429,71 @@ async fn apply_fireworks_models(tx: &AcpAgentTx) -> Result<FireworksModelsApply,
     Ok(FireworksModelsApply { warning, models })
 }
 
+struct OpenCodeGoModelsApply {
+    warning: Option<String>,
+    models: Option<acp::SessionModelState>,
+    catalog: Vec<xai_grok_shell::opencode_go_models::OpenCodeGoModelDescriptor>,
+    enabled_models: Vec<String>,
+}
+
+async fn apply_opencode_go_models(
+    tx: &AcpAgentTx,
+    method: &'static str,
+    enabled_models: Option<&[String]>,
+) -> Result<OpenCodeGoModelsApply, String> {
+    let params = enabled_models
+        .map(|models| serde_json::json!({ "enabled_models": models }))
+        .unwrap_or_else(|| serde_json::json!({}));
+    let request = acp::ExtRequest::new(
+        method,
+        serde_json::value::to_raw_value(&params)
+            .expect("serialize OpenCode Go models params")
+            .into(),
+    );
+    let response = acp_send(request, tx)
+        .await
+        .map_err(|error| sanitize_user_error(&format!("{error}")))?;
+    let envelope: serde_json::Value = serde_json::from_str(response.0.get())
+        .map_err(|error| format!("OpenCode Go models update returned invalid JSON: {error}"))?;
+    let result = envelope.get("result").unwrap_or(&envelope);
+    let warning = result
+        .get("warning")
+        .and_then(serde_json::Value::as_str)
+        .map(sanitize_user_error);
+    let models = result
+        .get("models")
+        .cloned()
+        .map(serde_json::from_value::<acp::SessionModelState>)
+        .transpose()
+        .map_err(|error| format!("OpenCode Go update returned an invalid catalog: {error}"))?;
+    let catalog = result
+        .get("catalog")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("OpenCode Go update returned invalid model metadata: {error}"))?
+        .unwrap_or_default();
+    let enabled_models = result
+        .get("enabled_models")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("OpenCode Go update returned invalid enabled models: {error}"))?
+        .unwrap_or_default();
+    Ok(OpenCodeGoModelsApply {
+        warning,
+        models,
+        catalog,
+        enabled_models,
+    })
+}
+
+fn next_opencode_go_transport_token() -> u64 {
+    NEXT_OPENCODE_GO_TRANSPORT_TOKEN
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1)
+}
+
 fn persisted_perplexity_web_search_enabled(fallback: bool) -> bool {
     xai_grok_shell::config::load_from_disk()
         .ok()
@@ -538,6 +608,208 @@ pub(crate) fn execute(
                         warning: Some(warning),
                         error: None,
                         models: None,
+                    },
+                }
+            });
+        }
+        Effect::UpdateOpenCodeGoApiKey { generation, key } => {
+            let transport_token = next_opencode_go_transport_token();
+            publish_kimi_transport_token(&LATEST_OPENCODE_GO_MUTATION, transport_token);
+            let mut mutation_ticket = OPENCODE_GO_MUTATION_QUEUE.enqueue();
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                mutation_ticket.wait_turn().await;
+                let configured = key.is_some();
+                let _guard = OPENCODE_GO_MUTATION_LOCK.lock().await;
+                if !is_latest_kimi_transport_token(&LATEST_OPENCODE_GO_MUTATION, transport_token) {
+                    return TaskResult::OpenCodeGoModelsUpdated {
+                        configured: Some(configured),
+                        mutation: true,
+                        generation,
+                        stale: true,
+                        warning: None,
+                        error: None,
+                        models: None,
+                        catalog: Vec::new(),
+                        enabled_models: Vec::new(),
+                    };
+                }
+                let grok_home = xai_grok_tools::util::grok_home::grok_home();
+                let storage_result = match key.as_ref() {
+                    Some(secret) => xai_grok_shell::auth::store_provider_api_key(
+                        &grok_home,
+                        xai_grok_shell::sampling::types::ModelProvider::OpenCodeGo,
+                        secret.expose(),
+                    ),
+                    None => xai_grok_shell::auth::clear_provider_api_key(
+                        &grok_home,
+                        xai_grok_shell::sampling::types::ModelProvider::OpenCodeGo,
+                    ),
+                };
+                if let Err(error) = storage_result {
+                    return TaskResult::OpenCodeGoModelsUpdated {
+                        configured: Some(configured),
+                        mutation: true,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_OPENCODE_GO_MUTATION,
+                            transport_token,
+                        ),
+                        warning: None,
+                        error: Some(sanitize_user_error(&error.to_string())),
+                        models: None,
+                        catalog: Vec::new(),
+                        enabled_models: Vec::new(),
+                    };
+                }
+                match apply_opencode_go_models(
+                    &tx,
+                    "open-grok/opencode-go/models/credential-apply",
+                    None,
+                )
+                .await
+                {
+                    Ok(applied) => TaskResult::OpenCodeGoModelsUpdated {
+                        configured: Some(configured),
+                        mutation: true,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_OPENCODE_GO_MUTATION,
+                            transport_token,
+                        ),
+                        warning: applied.warning,
+                        error: None,
+                        models: applied.models,
+                        catalog: applied.catalog,
+                        enabled_models: applied.enabled_models,
+                    },
+                    Err(warning) => TaskResult::OpenCodeGoModelsUpdated {
+                        configured: Some(configured),
+                        mutation: true,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_OPENCODE_GO_MUTATION,
+                            transport_token,
+                        ),
+                        warning: Some(warning),
+                        error: None,
+                        models: None,
+                        catalog: Vec::new(),
+                        enabled_models: Vec::new(),
+                    },
+                }
+            });
+        }
+        Effect::UpdateOpenCodeGoEnabledModels { generation, models } => {
+            let transport_token = next_opencode_go_transport_token();
+            publish_kimi_transport_token(&LATEST_OPENCODE_GO_MUTATION, transport_token);
+            let mut mutation_ticket = OPENCODE_GO_MUTATION_QUEUE.enqueue();
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                mutation_ticket.wait_turn().await;
+                let _guard = OPENCODE_GO_MUTATION_LOCK.lock().await;
+                if !is_latest_kimi_transport_token(&LATEST_OPENCODE_GO_MUTATION, transport_token) {
+                    return TaskResult::OpenCodeGoModelsUpdated {
+                        configured: None,
+                        mutation: true,
+                        generation,
+                        stale: true,
+                        warning: None,
+                        error: None,
+                        models: None,
+                        catalog: Vec::new(),
+                        enabled_models: Vec::new(),
+                    };
+                }
+                if let Err(error) = xai_grok_shell::util::config::set_opencode_go_enabled_models(
+                    models.clone(),
+                )
+                .await
+                {
+                    return TaskResult::OpenCodeGoModelsUpdated {
+                        configured: None,
+                        mutation: true,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_OPENCODE_GO_MUTATION,
+                            transport_token,
+                        ),
+                        warning: None,
+                        error: Some(sanitize_user_error(&error.to_string())),
+                        models: None,
+                        catalog: Vec::new(),
+                        enabled_models: Vec::new(),
+                    };
+                }
+                match apply_opencode_go_models(
+                    &tx,
+                    "open-grok/opencode-go/models/apply",
+                    Some(&models),
+                )
+                .await
+                {
+                    Ok(applied) => TaskResult::OpenCodeGoModelsUpdated {
+                        configured: None,
+                        mutation: true,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_OPENCODE_GO_MUTATION,
+                            transport_token,
+                        ),
+                        warning: applied.warning,
+                        error: None,
+                        models: applied.models,
+                        catalog: applied.catalog,
+                        enabled_models: applied.enabled_models,
+                    },
+                    Err(warning) => TaskResult::OpenCodeGoModelsUpdated {
+                        configured: None,
+                        mutation: true,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_OPENCODE_GO_MUTATION,
+                            transport_token,
+                        ),
+                        warning: Some(warning),
+                        error: None,
+                        models: None,
+                        catalog: Vec::new(),
+                        enabled_models: Vec::new(),
+                    },
+                }
+            });
+        }
+        Effect::QueryOpenCodeGoModels { generation } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                match apply_opencode_go_models(
+                    &tx,
+                    "open-grok/opencode-go/models/get",
+                    None,
+                )
+                .await
+                {
+                    Ok(applied) => TaskResult::OpenCodeGoModelsUpdated {
+                        configured: None,
+                        mutation: false,
+                        generation,
+                        stale: false,
+                        warning: applied.warning,
+                        error: None,
+                        models: applied.models,
+                        catalog: applied.catalog,
+                        enabled_models: applied.enabled_models,
+                    },
+                    Err(error) => TaskResult::OpenCodeGoModelsUpdated {
+                        configured: None,
+                        mutation: false,
+                        generation,
+                        stale: false,
+                        warning: None,
+                        error: Some(error),
+                        models: None,
+                        catalog: Vec::new(),
+                        enabled_models: Vec::new(),
                     },
                 }
             });
@@ -2909,6 +3181,52 @@ pub(crate) fn execute(
                         }
                     });
                 TaskResult::FireworksModelRebindComplete {
+                    agent_id,
+                    session_id,
+                    model_id,
+                    effort,
+                    generation,
+                    result,
+                }
+            });
+        }
+        Effect::RebindOpenCodeGoModel {
+            agent_id,
+            session_id,
+            model_id,
+            effort,
+            generation,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let meta = effort.map(|eff| {
+                    use xai_grok_shell::sampling::types::{
+                        REASONING_EFFORT_META_KEY, reasoning_effort_meta_value,
+                    };
+                    let mut meta = acp::Meta::new();
+                    meta.insert(
+                        REASONING_EFFORT_META_KEY.to_string(),
+                        reasoning_effort_meta_value(eff),
+                    );
+                    meta
+                });
+                let request =
+                    acp::SetSessionModelRequest::new(session_id.clone(), model_id.clone()).meta(meta);
+                let result = acp_send(request, &tx)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| {
+                        if let Some(typed) = xai_grok_shell::agent::config::ModelSwitchIncompatibleAgentError::from_acp_error(&error)
+                        {
+                            SwitchModelError::IncompatibleAgent {
+                                error: typed,
+                                prev_model_id: None,
+                            }
+                        } else {
+                            SwitchModelError::Other(sanitize_user_error(&error.to_string()))
+                        }
+                    });
+                TaskResult::OpenCodeGoModelRebindComplete {
                     agent_id,
                     session_id,
                     model_id,

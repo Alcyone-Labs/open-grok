@@ -619,6 +619,14 @@ pub enum Action {
     },
     /// Remove the UI-stored Fireworks AI credential.
     ClearFireworksApiKey,
+    SetOpenCodeGoApiKey {
+        key: crate::settings::SecretInput,
+    },
+    ClearOpenCodeGoApiKey,
+    SetOpenCodeGoEnabledModels {
+        models: Vec<String>,
+    },
+    RefreshOpenCodeGoModels,
     SetPerplexityWebSearch(bool),
     SetPerplexityApiKey {
         key: crate::settings::SecretInput,
@@ -726,6 +734,7 @@ pub enum Action {
     OpenKimiApiKeyEditor,
     /// Open Settings directly in the secure Fireworks AI API-key editor.
     OpenFireworksApiKeyEditor,
+    OpenOpenCodeGoApiKeyEditor,
     /// Start the concrete xAI login flow (welcome screen, picker, or re-auth).
     Login,
     /// Connect the independent OpenAI Codex OAuth account in the browser.
@@ -1529,6 +1538,17 @@ pub enum Effect {
         generation: u64,
         key: Option<crate::settings::SecretInput>,
     },
+    UpdateOpenCodeGoApiKey {
+        generation: u64,
+        key: Option<crate::settings::SecretInput>,
+    },
+    UpdateOpenCodeGoEnabledModels {
+        generation: u64,
+        models: Vec<String>,
+    },
+    QueryOpenCodeGoModels {
+        generation: u64,
+    },
     UpdatePerplexityWebSearch {
         enabled: Option<bool>,
         generation: u64,
@@ -1554,8 +1574,17 @@ pub enum Effect {
         effort: Option<ReasoningEffort>,
         generation: u64,
     },
+    RebindOpenCodeGoModel {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        model_id: acp::ModelId,
+        effort: Option<ReasoningEffort>,
+        generation: u64,
+    },
     /// Change the process working directory (project-picker selection).
-    SetWorkingDir { path: std::path::PathBuf },
+    SetWorkingDir {
+        path: std::path::PathBuf,
+    },
     /// Create a git worktree and then create or load an ACP session in it.
     /// When `load_session_id` is `Some`, loads that session in the new worktree
     /// instead of creating a fresh one (`--resume` + `--worktree` combination).
@@ -2422,8 +2451,27 @@ pub enum TaskResult {
         error: Option<String>,
         models: Option<acp::SessionModelState>,
     },
+    OpenCodeGoModelsUpdated {
+        configured: Option<bool>,
+        mutation: bool,
+        generation: u64,
+        stale: bool,
+        warning: Option<String>,
+        error: Option<String>,
+        models: Option<acp::SessionModelState>,
+        catalog: Vec<xai_grok_shell::opencode_go_models::OpenCodeGoModelDescriptor>,
+        enabled_models: Vec<String>,
+    },
     /// Completion of an automatic Fireworks sampler/model rebind.
     FireworksModelRebindComplete {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        model_id: acp::ModelId,
+        effort: Option<ReasoningEffort>,
+        generation: u64,
+        result: Result<(), SwitchModelError>,
+    },
+    OpenCodeGoModelRebindComplete {
         agent_id: AgentId,
         session_id: acp::SessionId,
         model_id: acp::ModelId,

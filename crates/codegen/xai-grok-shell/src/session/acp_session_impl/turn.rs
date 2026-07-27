@@ -2560,6 +2560,13 @@ impl SessionActor {
                         "Fireworks AI API-key authentication cannot be refreshed automatically",
                     ));
                 }
+                SamplerTurnOutcome::RefreshAuthAndResubmit {
+                    provider: xai_grok_sampling_types::ModelProvider::OpenCodeGo,
+                } => {
+                    return Err(acp::Error::internal_error().data(
+                        "OpenCode Go API-key authentication cannot be refreshed automatically",
+                    ));
+                }
             };
             auth_retry_schedule.reset();
             codex_auth_retry_attempted = false;

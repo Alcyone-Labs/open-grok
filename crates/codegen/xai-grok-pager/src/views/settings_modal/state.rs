@@ -9,7 +9,7 @@ use crate::input::line_editor::LineEditor;
 use crate::settings::{
     CodingDataSharingLock, EnumChoice, OwnedEnumChoice, PagerLocalSnapshot, SecretInput,
     SettingCategory, SettingKey, SettingKind, SettingMeta, SettingValue, SettingsRegistry,
-    StringValidator, current_value_for, dynamic_enum_choices,
+    StringValidator, current_value_for, dynamic_enum_choices, dynamic_multi_select_choices,
 };
 use crate::views::modal_window::ModalWindowState;
 
@@ -564,6 +564,10 @@ impl SettingsModalState {
         self.try_open_provider_login_secret("fireworks_api_key")
     }
 
+    pub fn try_open_opencode_go_provider_login(&mut self) -> bool {
+        self.try_open_provider_login_secret("opencode_go_api_key")
+    }
+
     /// Advance a focused Kimi login from its service selector to the matching
     /// credential editor while keeping the provider-login close semantics.
     pub(crate) fn advance_kimi_provider_login_to_secret(&mut self, endpoint: &'static str) -> bool {
@@ -814,7 +818,10 @@ impl SettingsModalState {
         let Some((key, meta)) = self.focused_setting() else {
             return false;
         };
-        if !matches!(meta.kind, SettingKind::Group { .. }) {
+        if !matches!(
+            meta.kind,
+            SettingKind::Group { .. } | SettingKind::DynamicMultiSelect { .. }
+        ) {
             return false;
         }
         self.transition_to_picking_group(key, 0);
@@ -1128,7 +1135,10 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
         | "toolset.web_search_source.codex"
         | "toolset.web_search_source.kimi_platform"
         | "toolset.web_search_source.kimi_code"
-        | "toolset.web_search_source.fireworks" => Some(Action::SetWebSearchSource { key, choice }),
+        | "toolset.web_search_source.fireworks"
+        | "toolset.web_search_source.opencode_go" => {
+            Some(Action::SetWebSearchSource { key, choice })
+        }
         "voice_capture_mode" => Some(Action::SetVoiceCaptureMode(choice.to_string())),
         "voice_stt_language" => Some(Action::SetVoiceSttLanguage(choice.to_string())),
         "render_mermaid" => {
@@ -1261,6 +1271,18 @@ pub(super) fn group_children(state: &SettingsModalState, key: SettingKey) -> &'s
     match state.registry.find(key).map(|m| &m.kind) {
         Some(SettingKind::Group { children }) => children,
         _ => &[],
+    }
+}
+
+pub(super) fn dynamic_group_choices(
+    state: &SettingsModalState,
+    key: SettingKey,
+) -> Vec<crate::settings::OwnedMultiSelectChoice> {
+    match state.registry.find(key).map(|meta| &meta.kind) {
+        Some(SettingKind::DynamicMultiSelect { source }) => {
+            dynamic_multi_select_choices(*source, &state.pager_snapshot)
+        }
+        _ => Vec::new(),
     }
 }
 

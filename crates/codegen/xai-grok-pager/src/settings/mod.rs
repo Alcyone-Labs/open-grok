@@ -28,11 +28,12 @@ pub mod registry;
 mod secret;
 
 pub use registry::{
-    CodingDataSharingLock, DynamicEnumSource, EnumChoice, OwnedEnumChoice, PagerLocalSnapshot,
-    SecretStatus, SettingCategory, SettingKey, SettingKind, SettingMeta, SettingOwner,
-    SettingValue, SettingsRegistry, StringValidator, canonical_hunk_tracker_mode,
-    canonical_kimi_api_endpoint, canonical_screen_mode, canonical_voice_capture_mode,
-    canonical_voice_stt_language, current_value_for, default_value_for, dynamic_enum_choices,
+    CodingDataSharingLock, DynamicEnumSource, DynamicMultiSelectSource, EnumChoice,
+    OwnedEnumChoice, OwnedMultiSelectChoice, PagerLocalSnapshot, SecretStatus, SettingCategory,
+    SettingKey, SettingKind, SettingMeta, SettingOwner, SettingValue, SettingsRegistry,
+    StringValidator, canonical_hunk_tracker_mode, canonical_kimi_api_endpoint,
+    canonical_screen_mode, canonical_voice_capture_mode, canonical_voice_stt_language,
+    current_value_for, default_value_for, dynamic_enum_choices, dynamic_multi_select_choices,
     is_local_feature_flag,
 };
 pub use secret::SecretInput;

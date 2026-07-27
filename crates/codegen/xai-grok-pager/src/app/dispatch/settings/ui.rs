@@ -113,6 +113,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     let kimi_api_key_status = kimi_api_key_status();
     let kimi_code_api_key_status = kimi_code_api_key_status();
     let fireworks_api_key_status = fireworks_api_key_status();
+    let opencode_go_api_key_status = opencode_go_api_key_status();
     let perplexity_api_key_status = perplexity_api_key_status();
     let kimi_api_endpoint = app.kimi_api_endpoint.clone();
     let perplexity_web_search_enabled = app.perplexity_web_search_enabled;
@@ -152,6 +153,9 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 kimi_api_key_status,
                 kimi_code_api_key_status,
                 fireworks_api_key_status,
+                opencode_go_api_key_status,
+                opencode_go_models: app.opencode_go_models.clone(),
+                opencode_go_enabled_models: app.opencode_go_enabled_models.clone(),
                 perplexity_web_search_enabled,
                 web_search_source,
                 x_search_enabled,
@@ -285,7 +289,13 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
     let kimi_api_key_status = kimi_api_key_status();
     let kimi_code_api_key_status = kimi_code_api_key_status();
     let fireworks_api_key_status = fireworks_api_key_status();
+    let opencode_go_api_key_status = opencode_go_api_key_status();
     let kimi_api_endpoint = app.kimi_api_endpoint.clone();
+    if opencode_go_api_key_status != crate::settings::SecretStatus::Missing {
+        effects.push(Effect::QueryOpenCodeGoModels {
+            generation: app.opencode_go_operation_generation,
+        });
+    }
 
     let Some(agent) = app.agents.get_mut(&id) else {
         return effects;
@@ -326,6 +336,9 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
         kimi_api_key_status,
         kimi_code_api_key_status,
         fireworks_api_key_status,
+        opencode_go_api_key_status,
+        opencode_go_models: app.opencode_go_models.clone(),
+        opencode_go_enabled_models: app.opencode_go_enabled_models.clone(),
         perplexity_web_search_enabled: app.perplexity_web_search_enabled,
         web_search_source: xai_grok_shell::util::config::load_web_search_source_sync(),
         x_search_enabled: xai_grok_shell::util::config::load_x_search_config_sync().enabled,
@@ -415,6 +428,36 @@ pub(in crate::app::dispatch) fn dispatch_open_fireworks_api_key_editor(
         tracing::error!(
             target: "settings",
             "Fireworks API-key setting is missing from the registry",
+        );
+        return vec![];
+    }
+    if let Some(agent) = get_visible_agent_mut(app) {
+        agent.active_modal = Some(ActiveModal::Settings {
+            state: Box::new(state),
+        });
+    } else if matches!(app.active_view, ActiveView::AgentDashboard)
+        && let Some(dashboard) = app.dashboard.as_mut()
+    {
+        dashboard.settings_modal = Some(Box::new(state));
+    }
+    vec![]
+}
+
+pub(in crate::app::dispatch) fn dispatch_open_opencode_go_api_key_editor(
+    app: &mut AppView,
+) -> Vec<Effect> {
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalState;
+
+    let registry = app.settings_registry.clone();
+    let ui_snapshot = app.current_ui.clone();
+    let pager_snapshot = build_pager_snapshot(app);
+
+    let mut state = SettingsModalState::new(registry, ui_snapshot, pager_snapshot);
+    if !state.try_open_opencode_go_provider_login() {
+        tracing::error!(
+            target: "settings",
+            "OpenCode Go API-key setting is missing from the registry",
         );
         return vec![];
     }
@@ -910,6 +953,9 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         kimi_api_key_status: kimi_api_key_status(),
         kimi_code_api_key_status: kimi_code_api_key_status(),
         fireworks_api_key_status: fireworks_api_key_status(),
+        opencode_go_api_key_status: opencode_go_api_key_status(),
+        opencode_go_models: app.opencode_go_models.clone(),
+        opencode_go_enabled_models: app.opencode_go_enabled_models.clone(),
         perplexity_web_search_enabled: app.perplexity_web_search_enabled,
         web_search_source: xai_grok_shell::util::config::load_web_search_source_sync(),
         x_search_enabled: xai_grok_shell::util::config::load_x_search_config_sync().enabled,
@@ -930,6 +976,19 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         ask_user_question_timeout_enabled: app.ask_user_question_timeout_enabled,
         voice_stt_language: app.voice_config.language.clone(),
         local_feature_flags: xai_grok_shell::util::config::load_local_feature_flags_sync(),
+    }
+}
+
+pub(in crate::app::dispatch) fn opencode_go_api_key_status() -> crate::settings::SecretStatus {
+    if xai_grok_shell::opencode_go_models::environment_api_key_is_configured() {
+        crate::settings::SecretStatus::EnvironmentOverride
+    } else if xai_grok_shell::auth::provider_api_key_is_configured(
+        &xai_grok_tools::util::grok_home::grok_home(),
+        xai_grok_shell::sampling::types::ModelProvider::OpenCodeGo,
+    ) {
+        crate::settings::SecretStatus::Stored
+    } else {
+        crate::settings::SecretStatus::Missing
     }
 }
 
@@ -975,7 +1034,8 @@ pub(in crate::app::dispatch) fn action_for_reset(
             | "toolset.web_search_source.codex"
             | "toolset.web_search_source.kimi_platform"
             | "toolset.web_search_source.kimi_code"
-            | "toolset.web_search_source.fireworks",
+            | "toolset.web_search_source.fireworks"
+            | "toolset.web_search_source.opencode_go",
             SettingValue::Enum(choice),
         ) => Some(Action::SetWebSearchSource { key, choice }),
         ("toolset.x_search.enabled", SettingValue::Bool(b)) => Some(Action::SetXSearchEnabled(*b)),
@@ -1214,6 +1274,10 @@ pub(in crate::app::dispatch) fn action_for_reset(
             SettingValue::SecretStatus(crate::settings::SecretStatus::Missing),
         ) => Some(Action::ClearFireworksApiKey),
         (
+            "opencode_go_api_key",
+            SettingValue::SecretStatus(crate::settings::SecretStatus::Missing),
+        ) => Some(Action::ClearOpenCodeGoApiKey),
+        (
             "perplexity_api_key",
             SettingValue::SecretStatus(crate::settings::SecretStatus::Missing),
         ) => Some(Action::ClearPerplexityApiKey),
@@ -1251,7 +1315,8 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             | "toolset.web_search_source.codex"
             | "toolset.web_search_source.kimi_platform"
             | "toolset.web_search_source.kimi_code"
-            | "toolset.web_search_source.fireworks",
+            | "toolset.web_search_source.fireworks"
+            | "toolset.web_search_source.opencode_go",
             SettingValue::Enum(_),
         )
         | ("toolset.x_search.enabled" | "antigravity_skip_permissions", SettingValue::Bool(_)) => {}

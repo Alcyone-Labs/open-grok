@@ -866,6 +866,238 @@ fn handle_fireworks_model_rebind_complete(
     effects
 }
 
+fn capture_opencode_go_sessions_created_during_update(app: &mut AppView) {
+    let mut targets = Vec::new();
+    for (&agent_id, agent) in &mut app.agents {
+        if PrimaryProvider::for_current_model(&agent.session.models)
+            == Some(PrimaryProvider::OpenCodeGo)
+        {
+            agent.session.provider_rebind_pending = true;
+            targets.push(agent_id);
+        }
+    }
+    app.pending_opencode_go_rebind_agents.extend(targets);
+}
+
+fn pending_opencode_go_model(models: &crate::acp::model_state::ModelState) -> Option<acp::ModelId> {
+    let is_opencode_go = |model_id: &acp::ModelId| {
+        PrimaryProvider::for_model(models, model_id) == Some(PrimaryProvider::OpenCodeGo)
+    };
+    models
+        .current
+        .clone()
+        .filter(|id| models.available.contains_key(id) && is_opencode_go(id))
+        .or_else(|| {
+            models
+                .available
+                .keys()
+                .find(|id| is_opencode_go(id))
+                .cloned()
+        })
+}
+
+fn rebind_pending_opencode_go_sessions(app: &mut AppView, generation: u64) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    let targets = app
+        .pending_opencode_go_rebind_agents
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    let mut completed = Vec::new();
+    for agent_id in targets {
+        let Some(agent) = app.agents.get_mut(&agent_id) else {
+            completed.push(agent_id);
+            continue;
+        };
+        if !agent.session.provider_rebind_pending {
+            completed.push(agent_id);
+            continue;
+        }
+        if agent.session.model_switch_pending {
+            continue;
+        }
+        let Some(session_id) = agent.session.session_id.clone() else {
+            continue;
+        };
+        let Some(model_id) = pending_opencode_go_model(&agent.session.models) else {
+            tracing::warn!(?agent_id, "OpenCode Go sampler rebind has no enabled model");
+            agent.scrollback.push_block(RenderBlock::system(
+                "No enabled OpenCode Go model is available for this session; queued prompts are paused. Enable a model or switch this tab to another provider.".to_owned(),
+            ));
+            continue;
+        };
+        let effort = (agent.session.models.current.as_ref() == Some(&model_id))
+            .then_some(agent.session.models.reasoning_effort)
+            .flatten();
+
+        agent.session.model_switch_pending = true;
+        effects.push(Effect::RebindOpenCodeGoModel {
+            agent_id,
+            session_id,
+            model_id,
+            effort,
+            generation,
+        });
+    }
+    for agent_id in completed {
+        app.pending_opencode_go_rebind_agents.remove(&agent_id);
+    }
+    effects
+}
+
+fn after_opencode_go_session_ready(
+    app: &mut AppView,
+    agent_id: crate::app::agent::AgentId,
+    mut effects: Vec<Effect>,
+) -> Vec<Effect> {
+    if app.opencode_go_runtime_update_pending {
+        if let Some(agent) = app.agents.get_mut(&agent_id)
+            && PrimaryProvider::for_current_model(&agent.session.models)
+                == Some(PrimaryProvider::OpenCodeGo)
+        {
+            agent.session.provider_rebind_pending = true;
+            app.pending_opencode_go_rebind_agents.insert(agent_id);
+        }
+        return effects;
+    }
+    if app.pending_opencode_go_rebind_agents.contains(&agent_id)
+        && app.agents.get(&agent_id).is_some_and(|agent| {
+            agent.session.provider_rebind_pending && !agent.session.model_switch_pending
+        })
+    {
+        effects.extend(rebind_pending_opencode_go_sessions(
+            app,
+            app.opencode_go_operation_generation,
+        ));
+    }
+    effects
+}
+
+fn mark_runtime_pending_opencode_go_session(
+    app: &mut AppView,
+    agent_id: crate::app::agent::AgentId,
+    incoming_models: Option<&acp::SessionModelState>,
+) {
+    if !app.opencode_go_runtime_update_pending && app.opencode_go_operation_generation == 0 {
+        return;
+    }
+    let incoming = incoming_models
+        .cloned()
+        .map(|models| crate::acp::model_state::ModelState::from(Some(models)));
+    let is_opencode_go = incoming.as_ref().map_or_else(
+        || {
+            app.agents.get(&agent_id).is_some_and(|agent| {
+                PrimaryProvider::for_current_model(&agent.session.models)
+                    == Some(PrimaryProvider::OpenCodeGo)
+            })
+        },
+        |models| PrimaryProvider::for_current_model(models) == Some(PrimaryProvider::OpenCodeGo),
+    );
+    if incoming.is_some() && !is_opencode_go {
+        app.cancel_pending_opencode_go_rebind(agent_id);
+        return;
+    }
+    if is_opencode_go && let Some(agent) = app.agents.get_mut(&agent_id) {
+        agent.session.provider_rebind_pending = true;
+        app.pending_opencode_go_rebind_agents.insert(agent_id);
+    }
+}
+
+fn finish_opencode_go_rebind(app: &mut AppView, agent_id: crate::app::agent::AgentId) {
+    app.pending_opencode_go_rebind_agents.remove(&agent_id);
+    if let Some(agent) = app.agents.get_mut(&agent_id) {
+        agent.session.provider_rebind_pending = false;
+    }
+}
+
+fn handle_opencode_go_model_rebind_complete(
+    app: &mut AppView,
+    agent_id: crate::app::agent::AgentId,
+    session_id: acp::SessionId,
+    model_id: acp::ModelId,
+    effort: Option<xai_grok_shell::sampling::types::ReasoningEffort>,
+    generation: u64,
+    result: Result<(), crate::app::actions::SwitchModelError>,
+) -> Vec<Effect> {
+    let still_owned = app.pending_opencode_go_rebind_agents.contains(&agent_id);
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        app.pending_opencode_go_rebind_agents.remove(&agent_id);
+        return vec![];
+    };
+    if agent.session.session_id.as_ref() != Some(&session_id) {
+        if !agent.session.provider_rebind_pending {
+            app.pending_opencode_go_rebind_agents.remove(&agent_id);
+            return vec![];
+        }
+        if agent.session.model_switch_pending {
+            return vec![];
+        }
+        return rebind_pending_opencode_go_sessions(app, app.opencode_go_operation_generation);
+    }
+    if !still_owned || !agent.session.provider_rebind_pending {
+        agent.session.model_switch_pending = false;
+        let Some(target_model) = agent.session.models.current.clone() else {
+            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+        };
+        if target_model == model_id {
+            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+        }
+        let Some(current_session_id) = agent.session.session_id.clone() else {
+            agent.session.provider_rebind_pending = true;
+            return vec![];
+        };
+        let target_effort = agent.session.models.reasoning_effort;
+        agent.session.provider_rebind_pending = true;
+        agent.session.model_switch_pending = true;
+        return vec![Effect::SwitchModel {
+            agent_id,
+            session_id: current_session_id,
+            model_id: target_model,
+            effort: target_effort,
+            prev_model_id: None,
+        }];
+    }
+    agent.session.model_switch_pending = false;
+
+    if generation != app.opencode_go_operation_generation {
+        return rebind_pending_opencode_go_sessions(app, app.opencode_go_operation_generation);
+    }
+
+    match result {
+        Ok(()) => agent.session.models.set_current(model_id, effort),
+        Err(error) => {
+            agent.scrollback.push_block(RenderBlock::system(format!(
+                "Couldn't refresh the OpenCode Go session after its settings changed; queued prompts are paused. Update the OpenCode Go key or enabled models, or switch this tab to another provider. ({})",
+                match error {
+                    crate::app::actions::SwitchModelError::Other(message) => {
+                        scrub_error_for_toast(&message)
+                    }
+                    crate::app::actions::SwitchModelError::IncompatibleAgent { .. } => {
+                        "the current agent is incompatible with the selected OpenCode Go model"
+                            .to_owned()
+                    }
+                },
+            )));
+            return vec![];
+        }
+    }
+    finish_opencode_go_rebind(app, agent_id);
+
+    let mut effects = crate::app::dispatch::maybe_drain_queue_and_note_peek(app, agent_id);
+    if matches!(app.active_view, ActiveView::Agent(active) if active == agent_id) {
+        effects.extend(app.sync_primary_provider_from_active_agent());
+    }
+    effects
+}
+
+fn opencode_go_credential_configured() -> bool {
+    xai_grok_shell::opencode_go_models::environment_api_key_is_configured()
+        || xai_grok_shell::auth::provider_api_key_is_configured(
+            &xai_grok_tools::util::grok_home::grok_home(),
+            xai_grok_shell::sampling::types::ModelProvider::OpenCodeGo,
+        )
+}
+
 fn fireworks_credential_configured() -> bool {
     xai_grok_shell::fireworks_models::environment_api_key_is_configured()
         || xai_grok_shell::auth::provider_api_key_is_configured(
@@ -1218,10 +1450,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
+            mark_runtime_pending_opencode_go_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_perplexity_session(app, agent_id, new_models.as_ref());
             let effects = handle_session_created(app, agent_id, session_id, new_models);
             let effects = after_kimi_session_ready(app, agent_id, effects);
-            after_fireworks_session_ready(app, agent_id, effects)
+            let effects = after_fireworks_session_ready(app, agent_id, effects);
+            after_opencode_go_session_ready(app, agent_id, effects)
         }
         TaskResult::SessionFailed { agent_id, error } => {
             handle_session_failed(app, agent_id, error)
@@ -1235,6 +1469,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
+            mark_runtime_pending_opencode_go_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_perplexity_session(app, agent_id, new_models.as_ref());
             let effects = handle_worktree_session_created(
                 app,
@@ -1245,7 +1480,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 new_models,
             );
             let effects = after_kimi_session_ready(app, agent_id, effects);
-            after_fireworks_session_ready(app, agent_id, effects)
+            let effects = after_fireworks_session_ready(app, agent_id, effects);
+            after_opencode_go_session_ready(app, agent_id, effects)
         }
         TaskResult::WorktreeForked {
             agent_id,
@@ -1324,6 +1560,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
+            mark_runtime_pending_opencode_go_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_perplexity_session(app, agent_id, new_models.as_ref());
             let effects = handle_session_loaded(
                 app,
@@ -1336,7 +1573,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 running_prompt_id,
             );
             let effects = after_kimi_session_ready(app, agent_id, effects);
-            after_fireworks_session_ready(app, agent_id, effects)
+            let effects = after_fireworks_session_ready(app, agent_id, effects);
+            after_opencode_go_session_ready(app, agent_id, effects)
         }
         TaskResult::SessionTitleFromDisk { agent_id, title } => {
             if let Some(agent) = app.agents.get_mut(&agent_id)
@@ -1428,9 +1666,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, None);
             mark_runtime_pending_fireworks_session(app, agent_id, None);
+            mark_runtime_pending_opencode_go_session(app, agent_id, None);
             let effects = handle_session_restored(app, agent_id, local_session_id);
             let effects = after_kimi_session_ready(app, agent_id, effects);
-            after_fireworks_session_ready(app, agent_id, effects)
+            let effects = after_fireworks_session_ready(app, agent_id, effects);
+            after_opencode_go_session_ready(app, agent_id, effects)
         }
         TaskResult::SessionRestoreFailed { agent_id, error } => {
             handle_session_restore_failed(app, agent_id, error)
@@ -1560,8 +1800,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             // session flag) keeps the pre-Fireworks rule: released on leaving
             // Kimi.
             let held_by_fireworks = app.pending_fireworks_rebind_agents.contains(&agent_id);
+            let held_by_opencode_go = app.pending_opencode_go_rebind_agents.contains(&agent_id);
             let left_kimi = switch_succeeded
                 && !held_by_fireworks
+                && !held_by_opencode_go
                 && target_provider != Some(PrimaryProvider::Kimi);
             if left_kimi {
                 app.cancel_pending_kimi_rebind(agent_id);
@@ -1571,6 +1813,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 && target_provider != Some(PrimaryProvider::Fireworks);
             if left_fireworks {
                 app.cancel_pending_fireworks_rebind(agent_id);
+            }
+            let left_opencode_go = switch_succeeded
+                && held_by_opencode_go
+                && target_provider != Some(PrimaryProvider::OpenCodeGo);
+            if left_opencode_go {
+                app.cancel_pending_opencode_go_rebind(agent_id);
             }
             let mut effects = handle_switch_model_complete(
                 app,
@@ -1604,6 +1852,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 effects.extend(rebind_pending_fireworks_sessions(
                     app,
                     app.fireworks_operation_generation,
+                ));
+            }
+            if app.pending_opencode_go_rebind_agents.contains(&agent_id)
+                && app.agents.get(&agent_id).is_some_and(|agent| {
+                    agent.session.provider_rebind_pending && !agent.session.model_switch_pending
+                })
+            {
+                effects.extend(rebind_pending_opencode_go_sessions(
+                    app,
+                    app.opencode_go_operation_generation,
                 ));
             }
             effects
@@ -1718,6 +1976,124 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             generation,
             result,
         } => handle_fireworks_model_rebind_complete(
+            app, agent_id, session_id, model_id, effort, generation, result,
+        ),
+        TaskResult::OpenCodeGoModelsUpdated {
+            configured,
+            mutation,
+            generation,
+            stale,
+            warning,
+            error,
+            models,
+            catalog,
+            enabled_models,
+        } => {
+            if stale || generation != app.opencode_go_operation_generation {
+                return vec![];
+            }
+            if mutation {
+                capture_opencode_go_sessions_created_during_update(app);
+            }
+            let operation_succeeded = error.is_none();
+            let runtime_apply_unconfirmed = mutation && warning.is_some() && models.is_none();
+
+            if operation_succeeded && models.is_some() {
+                app.opencode_go_models = catalog;
+                app.opencode_go_enabled_models = enabled_models;
+            }
+            if let Some(models) = models {
+                apply_kimi_catalog(app, models);
+            }
+            super::settings::ui::refresh_open_settings_modals(app);
+
+            if !mutation {
+                if let Some(error) = error {
+                    app.show_toast(&format!(
+                        "Could not query OpenCode Go models: {}",
+                        scrub_error_for_toast(&error),
+                    ));
+                } else if let Some(warning) = warning {
+                    app.show_toast(&format!(
+                        "OpenCode Go model query warning: {}",
+                        scrub_error_for_toast(&warning),
+                    ));
+                }
+                return vec![];
+            }
+
+            if let Some(error) = error {
+                let operation = if configured.is_some() {
+                    "update OpenCode Go API key"
+                } else {
+                    "update enabled OpenCode Go models"
+                };
+                app.show_toast(&format!(
+                    "✗ Could not {operation}: {}; queued OpenCode Go prompts remain paused",
+                    scrub_error_for_toast(&error),
+                ));
+                return vec![];
+            }
+
+            let message = match configured {
+                Some(true) => {
+                    if super::settings::ui::opencode_go_api_key_status()
+                        == crate::settings::SecretStatus::EnvironmentOverride
+                    {
+                        "✓ OpenCode Go API key saved to UI storage; environment key remains active"
+                            .to_owned()
+                    } else if warning.is_some() {
+                        "✓ OpenCode Go API key saved".to_owned()
+                    } else {
+                        "✓ OpenCode Go API key saved; models queried".to_owned()
+                    }
+                }
+                Some(false) => {
+                    if super::settings::ui::opencode_go_api_key_status()
+                        == crate::settings::SecretStatus::EnvironmentOverride
+                    {
+                        "✓ UI-stored OpenCode Go API key cleared; environment key remains active"
+                            .to_owned()
+                    } else {
+                        "✓ UI-stored OpenCode Go API key cleared".to_owned()
+                    }
+                }
+                None => "✓ OpenCode Go enabled models updated".to_owned(),
+            };
+            if let Some(warning) = warning {
+                app.show_toast(&format!(
+                    "{message}; model query warning: {}{}",
+                    scrub_error_for_toast(&warning),
+                    if runtime_apply_unconfirmed {
+                        "; queued OpenCode Go prompts remain paused"
+                    } else {
+                        ""
+                    },
+                ));
+            } else {
+                app.show_toast(&message);
+            }
+
+            if !operation_succeeded || runtime_apply_unconfirmed {
+                return vec![];
+            }
+            app.opencode_go_runtime_update_pending = false;
+            if !opencode_go_credential_configured() {
+                app.show_toast(
+                    "OpenCode Go API key required; queued OpenCode Go prompts remain paused",
+                );
+                return vec![];
+            }
+            rebind_pending_opencode_go_sessions(app, generation)
+        }
+        TaskResult::OpenCodeGoModelRebindComplete {
+            agent_id,
+            session_id,
+            model_id,
+            effort,
+            generation,
+            result,
+        } => handle_opencode_go_model_rebind_complete(
             app, agent_id, session_id, model_id, effort, generation, result,
         ),
         TaskResult::BgTaskKilled {

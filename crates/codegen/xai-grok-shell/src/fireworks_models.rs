@@ -32,7 +32,7 @@ pub struct CuratedFireworksModel {
 
 /// The only Fireworks models Open Grok exposes. A `/models` response may
 /// enrich these entries but can neither add nor remove them.
-pub const CURATED_FIREWORKS_MODELS: [CuratedFireworksModel; 4] = [
+pub const CURATED_FIREWORKS_MODELS: [CuratedFireworksModel; 6] = [
     CuratedFireworksModel {
         key: "glm-5.2",
         slug: "accounts/fireworks/models/glm-5p2",
@@ -60,6 +60,20 @@ pub const CURATED_FIREWORKS_MODELS: [CuratedFireworksModel; 4] = [
         name: "Kimi K2.7 Code",
         description: "Moonshot's Kimi K2.7 coding model on Fireworks AI",
         fallback_context_window: 262_144,
+    },
+    CuratedFireworksModel {
+        key: "fireworks:kimi-k3",
+        slug: "accounts/fireworks/models/kimi-k3",
+        name: "Kimi K3",
+        description: "Moonshot's Kimi K3 flagship model on Fireworks AI",
+        fallback_context_window: 1_040_000,
+    },
+    CuratedFireworksModel {
+        key: "fireworks:kimi-k3-fast",
+        slug: "accounts/fireworks/routers/kimi-k3-fast",
+        name: "Kimi K3 Fast",
+        description: "Kimi K3 on Fireworks AI's low-latency router",
+        fallback_context_window: 1_040_000,
     },
 ];
 
@@ -367,6 +381,23 @@ mod tests {
                 Some(FIREWORKS_API_KEY_ENV)
             );
         }
+    }
+
+    #[test]
+    fn kimi_k3_variants_use_fireworks_model_and_router_paths() {
+        let client = FireworksModelsClient::with_base_url(FIREWORKS_API_BASE_URL);
+        let entries = client
+            .catalog_from_wire(FireworksModelsResponse { data: Vec::new() }, "catalog-key")
+            .entries();
+
+        assert_eq!(
+            entries["fireworks:kimi-k3"].info.model,
+            "accounts/fireworks/models/kimi-k3"
+        );
+        assert_eq!(
+            entries["fireworks:kimi-k3-fast"].info.model,
+            "accounts/fireworks/routers/kimi-k3-fast"
+        );
     }
 
     #[test]

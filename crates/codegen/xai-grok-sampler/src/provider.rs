@@ -350,6 +350,21 @@ impl ProviderAdapter for FireworksProvider {
     }
 }
 
+#[derive(Debug)]
+pub struct OpenCodeGoProvider;
+
+impl ProviderAdapter for OpenCodeGoProvider {
+    fn provider(&self) -> ModelProvider {
+        ModelProvider::OpenCodeGo
+    }
+
+    fn sanitize_chat_request(&self, request: &mut ChatCompletionRequest) {
+        for message in &mut request.messages {
+            message.model_id = None;
+        }
+    }
+}
+
 /// One entry in the built-in provider registry.
 #[derive(Clone, Copy, Debug)]
 pub struct ProviderRegistration {
@@ -361,9 +376,10 @@ static XAI_PROVIDER: XaiProvider = XaiProvider;
 static CODEX_PROVIDER: CodexProvider = CodexProvider;
 static KIMI_PROVIDER: KimiProvider = KimiProvider;
 static FIREWORKS_PROVIDER: FireworksProvider = FireworksProvider;
+static OPEN_CODE_GO_PROVIDER: OpenCodeGoProvider = OpenCodeGoProvider;
 
 /// Complete registry for the built-in providers.
-pub static PROVIDER_REGISTRY: [ProviderRegistration; 4] = [
+pub static PROVIDER_REGISTRY: [ProviderRegistration; 5] = [
     ProviderRegistration {
         provider: ModelProvider::Xai,
         adapter: &XAI_PROVIDER,
@@ -380,6 +396,10 @@ pub static PROVIDER_REGISTRY: [ProviderRegistration; 4] = [
         provider: ModelProvider::Fireworks,
         adapter: &FIREWORKS_PROVIDER,
     },
+    ProviderRegistration {
+        provider: ModelProvider::OpenCodeGo,
+        adapter: &OPEN_CODE_GO_PROVIDER,
+    },
 ];
 
 /// Look up the stateless transport adapter for a built-in provider.
@@ -391,6 +411,7 @@ pub fn provider_adapter(provider: ModelProvider) -> &'static dyn ProviderAdapter
         ModelProvider::Codex => PROVIDER_REGISTRY[1].adapter,
         ModelProvider::Kimi => PROVIDER_REGISTRY[2].adapter,
         ModelProvider::Fireworks => PROVIDER_REGISTRY[3].adapter,
+        ModelProvider::OpenCodeGo => PROVIDER_REGISTRY[4].adapter,
     }
 }
 

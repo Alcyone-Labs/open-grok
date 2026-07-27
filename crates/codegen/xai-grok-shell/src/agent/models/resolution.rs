@@ -296,7 +296,7 @@ pub fn resolve_model_catalog(
     cfg: &config::Config,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
-    resolve_model_catalog_with_provider_catalogs(cfg, prefetched, None, None, None)
+    resolve_model_catalog_with_provider_catalogs(cfg, prefetched, None, None, None, None)
 }
 
 /// Resolve the combined catalog while preserving each provider's independently
@@ -307,6 +307,7 @@ pub(crate) fn resolve_model_catalog_with_provider_catalogs(
     codex_catalog: Option<&CodexModelsCatalog>,
     kimi_catalog: Option<&KimiModelsCatalog>,
     fireworks_catalog: Option<&FireworksModelsCatalog>,
+    opencode_go_catalog: Option<&OpenCodeGoModelsCatalog>,
 ) -> IndexMap<String, ModelEntry> {
     let codex_entries = codex_catalog.map(CodexModelsCatalog::entries);
     let codex_authoritative = codex_catalog.is_some_and(CodexModelsCatalog::is_authoritative);
@@ -315,6 +316,9 @@ pub(crate) fn resolve_model_catalog_with_provider_catalogs(
     let fireworks_entries = fireworks_catalog.map(FireworksModelsCatalog::entries);
     let fireworks_authoritative =
         fireworks_catalog.is_some_and(FireworksModelsCatalog::is_authoritative);
+    let opencode_go_entries = opencode_go_catalog.map(OpenCodeGoModelsCatalog::entries);
+    let opencode_go_authoritative =
+        opencode_go_catalog.is_some_and(OpenCodeGoModelsCatalog::is_authoritative);
     let mut catalog: IndexMap<String, ModelEntry> =
         config::resolve_model_list_with_provider_catalogs(
             cfg,
@@ -325,7 +329,21 @@ pub(crate) fn resolve_model_catalog_with_provider_catalogs(
             kimi_authoritative,
             fireworks_entries,
             fireworks_authoritative,
+            opencode_go_entries,
+            opencode_go_authoritative,
         );
+
+    let enabled_open_code_go = cfg
+        .models
+        .opencode_go_enabled_models
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    catalog.retain(|key, entry| {
+        entry.info.provider != xai_grok_sampling_types::ModelProvider::OpenCodeGo
+            || enabled_open_code_go.contains(key.as_str())
+            || enabled_open_code_go.contains(entry.info.model.as_str())
+    });
 
     if let Ok(Some(disabled)) = ModelGlobSet::compile(cfg.models.disabled_models.as_ref()) {
         let before = catalog.len();

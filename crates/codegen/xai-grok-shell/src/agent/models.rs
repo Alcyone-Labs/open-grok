@@ -16,6 +16,9 @@ use crate::auth::{AuthManager, GrokAuth, GrokComConfig};
 use crate::codex_models::{CodexCompactionMetadata, CodexModelsCatalog, CodexModelsClient};
 use crate::fireworks_models::{FireworksModelsCatalog, FireworksModelsClient};
 use crate::kimi_models::{KimiApiEndpoint, KimiModelsCatalog, KimiModelsClient};
+use crate::opencode_go_models::{
+    OpenCodeGoModelDescriptor, OpenCodeGoModelsCatalog, OpenCodeGoModelsClient,
+};
 use crate::remote::{FetchModelsResult, fetch_models_blocking};
 use crate::sampling::SamplerConfig as SamplingConfig;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -119,7 +122,10 @@ pub(crate) fn task_model_error_for_catalog_with_provider_auth(
 fn task_model_credential_error(requested: &str, entry: &ModelEntry) -> Option<String> {
     use xai_grok_sampling_types::ModelProvider;
     let provider = entry.info.provider;
-    if !matches!(provider, ModelProvider::Kimi | ModelProvider::Fireworks) {
+    if !matches!(
+        provider,
+        ModelProvider::Kimi | ModelProvider::Fireworks | ModelProvider::OpenCodeGo
+    ) {
         return None;
     }
     let credentials = config::resolve_credentials(entry, None);
@@ -157,6 +163,7 @@ struct Inner {
     /// Provider-isolated Fireworks catalog queried with only the Fireworks
     /// API key. The queried catalog only enriches the curated model list.
     fireworks_catalog: RwLock<Option<FireworksModelsCatalog>>,
+    opencode_go_catalog: RwLock<Option<OpenCodeGoModelsCatalog>>,
     models: RwLock<IndexMap<String, ModelEntry>>,
     current_model_id: RwLock<acp::ModelId>,
     current_reasoning_effort: RwLock<Option<ReasoningEffort>>,
@@ -175,12 +182,14 @@ struct Inner {
     codex_client: CodexModelsClient,
     kimi_client: RwLock<KimiModelsClient>,
     fireworks_client: FireworksModelsClient,
+    opencode_go_client: OpenCodeGoModelsClient,
     /// Serialize Codex cache/network refreshes. Session startup waits for an
     /// already-running refresh so it resolves against the same catalog rather
     /// than racing past the initial `OnlineIfUncached` request.
     codex_refresh_lock: tokio::sync::Mutex<()>,
     kimi_refresh_lock: tokio::sync::Mutex<()>,
     fireworks_refresh_lock: tokio::sync::Mutex<()>,
+    opencode_go_refresh_lock: tokio::sync::Mutex<()>,
     /// Invalidates a refresh result when Codex logout races an in-flight
     /// `/models` request. Logout increments this before clearing the cache;
     /// only a refresh that started in the current generation may publish.
@@ -190,6 +199,7 @@ struct Inner {
     /// Invalidates a Fireworks model query when a catalog clear races its
     /// response.
     fireworks_catalog_generation: AtomicU64,
+    opencode_go_catalog_generation: AtomicU64,
     /// Guard to prevent overlapping retry loops.
     retry_in_flight: AtomicBool,
     /// Single-flight for the etag-triggered background refresh (`spawn_fetch`).
@@ -294,6 +304,7 @@ impl ModelsManager {
                 codex_catalog: RwLock::new(codex_catalog),
                 kimi_catalog: RwLock::new(kimi_catalog),
                 fireworks_catalog: RwLock::new(None),
+                opencode_go_catalog: RwLock::new(None),
                 models: RwLock::new(models),
                 current_model_id: RwLock::new(current_model_id),
                 current_reasoning_effort: RwLock::new(current_reasoning_effort),
@@ -307,12 +318,15 @@ impl ModelsManager {
                 codex_client,
                 kimi_client: RwLock::new(kimi_client),
                 fireworks_client: FireworksModelsClient::new(),
+                opencode_go_client: OpenCodeGoModelsClient::new(),
                 codex_refresh_lock: tokio::sync::Mutex::new(()),
                 kimi_refresh_lock: tokio::sync::Mutex::new(()),
                 fireworks_refresh_lock: tokio::sync::Mutex::new(()),
+                opencode_go_refresh_lock: tokio::sync::Mutex::new(()),
                 codex_catalog_generation: AtomicU64::new(0),
                 kimi_catalog_generation: AtomicU64::new(0),
                 fireworks_catalog_generation: AtomicU64::new(0),
+                opencode_go_catalog_generation: AtomicU64::new(0),
                 retry_in_flight: AtomicBool::new(false),
                 refresh_in_flight: AtomicBool::new(false),
                 allowlist_excludes_all: AtomicBool::new(false),
@@ -375,6 +389,7 @@ impl ModelsManager {
             codex_catalog.as_ref(),
             kimi_catalog.as_ref(),
             None,
+            None,
         );
 
         // Validate only against a real catalog; a bundled-only first run defers
@@ -421,6 +436,7 @@ impl ModelsManager {
         self.start_codex_models_refresh();
         self.start_kimi_models_query();
         self.start_fireworks_models_query();
+        self.start_opencode_go_models_query();
     }
 
     /// Refresh the authenticated ChatGPT Codex catalog after the agent has a
@@ -657,6 +673,109 @@ impl ModelsManager {
         }
     }
 
+    fn start_opencode_go_models_query(&self) {
+        if !self.inner.opencode_go_client.has_usable_api_key() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::debug!("OpenCode Go model query deferred: no Tokio runtime");
+            return;
+        };
+        let manager = self.clone();
+        runtime.spawn(async move {
+            if let Err(error) = manager.refresh_opencode_go_models().await {
+                tracing::warn!(%error, "OpenCode Go model query failed; keeping current models");
+            }
+        });
+    }
+
+    /// Query OpenCode Go's catalog and publish only the explicitly enabled
+    /// models. The unfiltered descriptors remain available to Settings.
+    pub(crate) async fn refresh_opencode_go_models(&self) -> anyhow::Result<bool> {
+        let _refresh_guard = self.inner.opencode_go_refresh_lock.lock().await;
+        let generation = self
+            .inner
+            .opencode_go_catalog_generation
+            .load(Ordering::Acquire);
+        let client = self.inner.opencode_go_client.clone();
+        let Some(refreshed) = client.query().await? else {
+            tracing::debug!("OpenCode Go model query skipped: no API key");
+            return Ok(false);
+        };
+        if generation
+            != self
+                .inner
+                .opencode_go_catalog_generation
+                .load(Ordering::Acquire)
+            || !client.catalog_matches_current_credential(&refreshed)
+        {
+            tracing::debug!(
+                "discarded OpenCode Go model query completed after catalog clear or credential change"
+            );
+            return Ok(false);
+        }
+        for warning in refreshed.warnings() {
+            tracing::warn!(warning, "OpenCode Go model omitted from catalog");
+        }
+        let count = refreshed.entries().len();
+        *self.inner.opencode_go_catalog.write() = Some(refreshed);
+        let cfg = self.inner.cfg.read().clone();
+        let prefetched = self.inner.prefetched.read().clone();
+        self.rebuild(&cfg, prefetched);
+        self.reselect_current_model_if_missing(&cfg);
+        self.notify_models_updated();
+        tracing::info!(count, "OpenCode Go model catalog refreshed");
+        Ok(true)
+    }
+
+    pub(crate) fn clear_opencode_go_models(&self) -> bool {
+        self.inner
+            .opencode_go_catalog_generation
+            .fetch_add(1, Ordering::AcqRel);
+        let had_catalog = self.inner.opencode_go_catalog.write().take().is_some();
+        let cfg = self.inner.cfg.read().clone();
+        let prefetched = self.inner.prefetched.read().clone();
+        self.rebuild(&cfg, prefetched);
+        self.reselect_current_model_if_missing(&cfg);
+        self.notify_models_updated();
+        had_catalog
+    }
+
+    pub(crate) async fn apply_opencode_go_credential_change(&self) -> anyhow::Result<bool> {
+        if self.inner.opencode_go_client.has_usable_api_key() {
+            self.refresh_opencode_go_models().await
+        } else {
+            self.clear_opencode_go_models();
+            Ok(false)
+        }
+    }
+
+    pub fn opencode_go_models(&self) -> Vec<OpenCodeGoModelDescriptor> {
+        self.inner
+            .opencode_go_catalog
+            .read()
+            .as_ref()
+            .map(OpenCodeGoModelsCatalog::descriptors)
+            .unwrap_or_default()
+    }
+
+    pub fn opencode_go_enabled_models(&self) -> Vec<String> {
+        self.inner
+            .cfg
+            .read()
+            .models
+            .opencode_go_enabled_models
+            .clone()
+    }
+
+    pub fn apply_opencode_go_enabled_models(&self, mut enabled_models: Vec<String>) {
+        enabled_models.sort();
+        enabled_models.dedup();
+        let mut cfg = self.inner.cfg.read().clone();
+        cfg.models.opencode_go_enabled_models = enabled_models;
+        self.apply_config(cfg);
+    }
+
     /// Apply a Kimi service selection to the resident model manager. The
     /// embedded partition is rebuilt synchronously, then both Platform and
     /// Code attempt a live `/models` refresh when a usable key is present.
@@ -695,6 +814,7 @@ impl ModelsManager {
             let codex_catalog = self.inner.codex_catalog.read();
             let kimi_catalog = self.inner.kimi_catalog.read();
             let fireworks_catalog = self.inner.fireworks_catalog.read();
+            let opencode_go_catalog = self.inner.opencode_go_catalog.read();
             resolve_model_catalog_with_provider_catalogs(
                 &new_config,
                 prefetched,
@@ -705,6 +825,7 @@ impl ModelsManager {
                     kimi_catalog.as_ref()
                 },
                 fireworks_catalog.as_ref(),
+                opencode_go_catalog.as_ref(),
             )
         };
         let has_real_catalog = *self.inner.has_fetched_real_catalog.read();
@@ -1085,12 +1206,14 @@ impl ModelsManager {
             let codex_catalog = self.inner.codex_catalog.read();
             let kimi_catalog = self.inner.kimi_catalog.read();
             let fireworks_catalog = self.inner.fireworks_catalog.read();
+            let opencode_go_catalog = self.inner.opencode_go_catalog.read();
             resolve_model_catalog_with_provider_catalogs(
                 cfg,
                 prefetched,
                 codex_catalog.as_ref(),
                 kimi_catalog.as_ref(),
                 fireworks_catalog.as_ref(),
+                opencode_go_catalog.as_ref(),
             )
         };
         *self.inner.models.write() = catalog;
@@ -1403,6 +1526,7 @@ impl ModelsManager {
         self.start_codex_models_refresh();
         self.start_kimi_models_query();
         self.start_fireworks_models_query();
+        self.start_opencode_go_models_query();
     }
 
     /// Refresh the model catalog on every auth token refresh.

@@ -1,6 +1,6 @@
 # Multi-provider architecture
 
-How Open Grok treats **xAI**, **OpenAI Codex**, **Kimi** (Platform vs Code), and **Fireworks AI** without leaking credentials, tools, or opaque history.
+How Open Grok treats **xAI**, **OpenAI Codex**, **Kimi** (Platform vs Code), **Fireworks AI**, and **OpenCode Go** without leaking credentials, tools, or opaque history.
 
 **Canonical contracts:**
 
@@ -35,6 +35,7 @@ Adapters (credential-free): `xai-grok-sampler/src/provider.rs`.
 | OpenAI Codex | Responses | Codex | OpenAI | Codex OAuth | **denied** |
 | Kimi | Chat | none | client function tools | API key only | **denied** |
 | Fireworks AI | Chat | none | client function tools | API key only | **denied** |
+| OpenCode Go | Chat, Messages (per model) | none | client function tools | API key only | **denied** |
 
 ## Layer map (paths)
 
@@ -64,6 +65,10 @@ Fireworks AI
   xai-grok-shell/src/fireworks_models.rs        # curated catalog, enrichment query, trusted host
   auth/storage.rs                               # fireworks::api_key (generic provider scope)
 
+OpenCode Go
+  xai-grok-shell/src/opencode_go_models.rs      # live availability + models.dev protocol mapping
+  auth/storage.rs                               # opencode_go::api_key (generic provider scope)
+
 Session routing / tools / compaction
   xai-grok-shell/src/session/
   xai-grok-shell/src/session/compaction.rs
@@ -87,6 +92,7 @@ Home root: `$OPENGROK_HOME` or `~/.opengrok` via `xai_grok_config::grok_home()`.
 | Kimi Platform | `auth.json` scope `kimi::api_key` | Settings / `/login kimi` |
 | Kimi Code | `auth.json` scope `kimi_code::api_key` | Settings / `/login kimi` |
 | Fireworks AI | `auth.json` scope `fireworks::api_key` | Settings / `/login fireworks` |
+| OpenCode Go | `auth.json` scope `opencode_go::api_key` | Settings / `/login opencode-go` |
 | Perplexity Search fallback | `auth.json` scope `perplexity::api_key` | Settings |
 | Both providers | — | `logout --all` |
 
@@ -104,10 +110,12 @@ Also isolated:
 5. **Kimi Platform vs Code** keys, catalogs, and trusted hosts are non-interchangeable.
    Platform embeds/discovers `kimi-k3` on Moonshot; Code embeds/discovers `k3`,
    `k3-256k`, and the `kimi-for-coding*` family on `api.kimi.com/coding/v1`.
-6. **xAI-only services** (relay, some uploads, etc.) close via monotonic export boundary after non-xAI denied profiles. Compatibility field name remains `ever_used_codex` even when the triggering provider is not Codex; subagents mark the parent tree.
-7. **xAI media / Imagine** must not receive Codex bearer; hide media tools while Codex is active.
-8. **Hosted search** is dialect-scoped: xAI web/X search vs OpenAI `web_search`. The optional Perplexity raw-search fallback is declared only for profiles whose `native_web_search` capability is false, currently Kimi. Never infer this from model names or URLs.
-9. **Opaque history** (e.g. Codex compaction carriers, xAI-only items) is projected only by the matching dialect.
+6. **OpenCode Go is opt-in per model.** Its live `/models` IDs are intersected with canonical metadata; unsupported or unclassified models are omitted. The enabled list defaults empty, and only enabled entries reach normal model settings or subagent selection.
+7. **OpenCode Go transport is model-owned.** `@ai-sdk/anthropic` entries use Messages + `x-api-key`; OpenAI-compatible entries use Chat Completions + Bearer. Never choose the protocol from the provider alone.
+8. **xAI-only services** (relay, some uploads, etc.) close via monotonic export boundary after non-xAI denied profiles. Compatibility field name remains `ever_used_codex` even when the triggering provider is not Codex; subagents mark the parent tree.
+9. **xAI media / Imagine** must not receive another provider's credential; hide media tools outside eligible xAI sessions.
+10. **Hosted search** is dialect-scoped: xAI web/X search vs OpenAI `web_search`. Optional client search fallbacks are declared only when the provider profile permits them. Never infer this from model names or URLs.
+11. **Opaque history** (e.g. Codex compaction carriers, xAI-only items) is projected only by the matching dialect.
 
 ## Sampling, routing, compaction
 
@@ -119,15 +127,15 @@ Also isolated:
 
 ### Adapter differences (summary)
 
-| Behavior | xAI | Codex | Kimi | Fireworks |
-| --- | --- | --- | --- | --- |
-| Private headers | `x-grok-*` | stripped | stripped | stripped |
-| Doom-loop opt-in | yes | no | no | no |
-| Responses extras | minimal | Max/Ultra mapping, multi-agent mode, reasoning summary | N/A | N/A |
-| Prompt cache key | no | session id | no | no |
-| Sticky turn state | no | `x-codex-turn-state` | no | no |
-| Unknown `response.*` events | strict | ignore unknown side-channels when opted | N/A | N/A |
-| Chat sanitization | — | — | clears temp/top_p/penalties | — |
+| Behavior | xAI | Codex | Kimi | Fireworks | OpenCode Go |
+| --- | --- | --- | --- | --- | --- |
+| Private headers | `x-grok-*` | stripped | stripped | stripped | stripped |
+| Doom-loop opt-in | yes | no | no | no | no |
+| Responses extras | minimal | Max/Ultra mapping, multi-agent mode, reasoning summary | N/A | N/A | N/A |
+| Prompt cache key | no | session id | no | no | no |
+| Sticky turn state | no | `x-codex-turn-state` | no | no | no |
+| Unknown `response.*` events | strict | ignore unknown side-channels when opted | N/A | N/A | N/A |
+| Chat sanitization | — | — | clears temp/top_p/penalties | — | per backend |
 
 ### Compaction
 

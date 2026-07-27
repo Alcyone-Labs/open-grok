@@ -85,6 +85,15 @@ pub fn load_local_feature_flags_sync() -> BTreeMap<&'static str, bool> {
         .collect()
 }
 
+/// Persist the provider-local OpenCode Go model allowlist. Empty disables all
+/// discovered models while retaining the provider credential and catalog.
+pub async fn set_opencode_go_enabled_models(mut models: Vec<String>) -> Result<()> {
+    models.retain(|model| !model.trim().is_empty());
+    models.sort();
+    models.dedup();
+    update_config(|cfg| cfg.models.opencode_go_enabled_models = models).await
+}
+
 fn set_nested_bool(root: &mut TomlValue, key: &str, value: bool) {
     let mut parts = key.split('.').peekable();
     let mut current = root;

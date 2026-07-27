@@ -66,9 +66,41 @@ pub(super) fn fireworks_models_apply_payload(
     }
 }
 
+pub(super) fn opencode_go_models_payload(
+    refreshed: Result<bool, String>,
+    models: acp::SessionModelState,
+    catalog: Vec<crate::opencode_go_models::OpenCodeGoModelDescriptor>,
+    enabled_models: Vec<String>,
+) -> serde_json::Value {
+    match refreshed {
+        Ok(refreshed) => serde_json::json!({
+            "refreshed": refreshed,
+            "models": models,
+            "catalog": catalog,
+            "enabled_models": enabled_models,
+        }),
+        Err(warning) => {
+            tracing::warn!(%warning, "OpenCode Go model query failed; returning current models");
+            serde_json::json!({
+                "refreshed": false,
+                "warning": warning,
+                "models": models,
+                "catalog": catalog,
+                "enabled_models": enabled_models,
+            })
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct KimiEndpointApplyParams {
     endpoint: crate::kimi_models::KimiApiEndpoint,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenCodeGoEnabledModelsParams {
+    #[serde(default)]
+    enabled_models: Vec<String>,
 }
 
 fn persisted_perplexity_web_search_enabled() -> anyhow::Result<bool> {
@@ -3780,6 +3812,83 @@ impl acp::Agent for MvpAgent {
                 );
                 crate::extensions::to_ext_response(Ok(fireworks_models_apply_payload(
                     refreshed, models,
+                )))
+            }
+            "open-grok/opencode-go/models/get" => {
+                let refreshed = if self.models_manager.opencode_go_models().is_empty() {
+                    self.models_manager.refresh_opencode_go_models().await.map_err(|error| error.to_string())
+                } else {
+                    Ok(false)
+                };
+                let available = self.models_manager.available();
+                let models = acp::SessionModelState::new(
+                    self.models_manager.current_model_id(),
+                    available.values().cloned().collect(),
+                );
+                crate::extensions::to_ext_response(Ok(opencode_go_models_payload(
+                    refreshed,
+                    models,
+                    self.models_manager.opencode_go_models(),
+                    self.models_manager.opencode_go_enabled_models(),
+                )))
+            }
+            "open-grok/opencode-go/models/apply" => {
+                let params = crate::extensions::parse_params::<OpenCodeGoEnabledModelsParams>(&args)?;
+                let cancelled_subagents = crate::agent::subagent::cancel_for_provider_runtime_change(
+                    &self.subagent_provider_registry,
+                    xai_grok_sampling_types::ModelProvider::OpenCodeGo,
+                );
+                if cancelled_subagents > 0 {
+                    tracing::warn!(
+                        cancelled_subagents,
+                        "cancelled subagents before OpenCode Go model allowlist change"
+                    );
+                }
+                self.models_manager
+                    .apply_opencode_go_enabled_models(params.enabled_models);
+                let refreshed = if self.models_manager.opencode_go_models().is_empty() {
+                    self.models_manager.refresh_opencode_go_models().await.map_err(|error| error.to_string())
+                } else {
+                    Ok(false)
+                };
+                let available = self.models_manager.available();
+                let models = acp::SessionModelState::new(
+                    self.models_manager.current_model_id(),
+                    available.values().cloned().collect(),
+                );
+                crate::extensions::to_ext_response(Ok(opencode_go_models_payload(
+                    refreshed,
+                    models,
+                    self.models_manager.opencode_go_models(),
+                    self.models_manager.opencode_go_enabled_models(),
+                )))
+            }
+            "open-grok/opencode-go/models/credential-apply" => {
+                let cancelled_subagents = crate::agent::subagent::cancel_for_provider_runtime_change(
+                    &self.subagent_provider_registry,
+                    xai_grok_sampling_types::ModelProvider::OpenCodeGo,
+                );
+                if cancelled_subagents > 0 {
+                    tracing::warn!(
+                        cancelled_subagents,
+                        "cancelled subagents before OpenCode Go credential change"
+                    );
+                }
+                let refreshed = self
+                    .models_manager
+                    .apply_opencode_go_credential_change()
+                    .await
+                    .map_err(|error| error.to_string());
+                let available = self.models_manager.available();
+                let models = acp::SessionModelState::new(
+                    self.models_manager.current_model_id(),
+                    available.values().cloned().collect(),
+                );
+                crate::extensions::to_ext_response(Ok(opencode_go_models_payload(
+                    refreshed,
+                    models,
+                    self.models_manager.opencode_go_models(),
+                    self.models_manager.opencode_go_enabled_models(),
                 )))
             }
             "open-grok/kimi/endpoint/apply" => {

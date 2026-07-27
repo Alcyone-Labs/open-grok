@@ -93,6 +93,41 @@ pub struct OwnedEnumChoice {
     pub description: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct OwnedMultiSelectChoice {
+    pub canonical: String,
+    pub display: String,
+    pub description: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DynamicMultiSelectSource {
+    OpenCodeGoModels,
+}
+
+pub fn dynamic_multi_select_choices(
+    source: DynamicMultiSelectSource,
+    snapshot: &PagerLocalSnapshot,
+) -> Vec<OwnedMultiSelectChoice> {
+    match source {
+        DynamicMultiSelectSource::OpenCodeGoModels => snapshot
+            .opencode_go_models
+            .iter()
+            .map(|model| OwnedMultiSelectChoice {
+                canonical: model.id.clone(),
+                display: model.name.clone(),
+                description: format!("{} · {:?}", model.id, model.api_backend),
+                selected: snapshot
+                    .opencode_go_enabled_models
+                    .iter()
+                    .any(|enabled| enabled == &model.id || enabled == &model.key),
+            })
+            .collect(),
+    }
+}
+
 /// Source of runtime choices for a `SettingKind::DynamicEnum`.
 /// `#[non_exhaustive]` allows adding new sources without breaking matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +249,9 @@ pub enum SettingKind {
     Group {
         children: &'static [SettingKey],
     },
+    DynamicMultiSelect {
+        source: DynamicMultiSelectSource,
+    },
 }
 
 /// One row in the registry. Pure metadata — no function pointers, no
@@ -323,6 +361,9 @@ pub struct PagerLocalSnapshot {
     pub kimi_code_api_key_status: SecretStatus,
     /// Status-only mirror for the Fireworks AI API-key source.
     pub fireworks_api_key_status: SecretStatus,
+    pub opencode_go_api_key_status: SecretStatus,
+    pub opencode_go_models: Vec<xai_grok_shell::opencode_go_models::OpenCodeGoModelDescriptor>,
+    pub opencode_go_enabled_models: Vec<String>,
     pub perplexity_web_search_enabled: bool,
     /// `[toolset.web_search_source]` selections (effective TOML merge).
     pub web_search_source: xai_grok_shell::tools::config::WebSearchSourceConfig,
@@ -392,6 +433,9 @@ impl Default for PagerLocalSnapshot {
             kimi_api_key_status: SecretStatus::Missing,
             kimi_code_api_key_status: SecretStatus::Missing,
             fireworks_api_key_status: SecretStatus::Missing,
+            opencode_go_api_key_status: SecretStatus::Missing,
+            opencode_go_models: Vec::new(),
+            opencode_go_enabled_models: Vec::new(),
             perplexity_web_search_enabled: false,
             web_search_source: Default::default(),
             x_search_enabled: true,
@@ -825,6 +869,7 @@ pub fn current_value_for(
         "kimi_api_key" => Some(SettingValue::SecretStatus(pager.kimi_api_key_status)),
         "kimi_code_api_key" => Some(SettingValue::SecretStatus(pager.kimi_code_api_key_status)),
         "fireworks_api_key" => Some(SettingValue::SecretStatus(pager.fireworks_api_key_status)),
+        "opencode_go_api_key" => Some(SettingValue::SecretStatus(pager.opencode_go_api_key_status)),
         "toolset.perplexity_web_search.enabled" => {
             Some(SettingValue::Bool(pager.perplexity_web_search_enabled))
         }
@@ -832,13 +877,15 @@ pub fn current_value_for(
         | "toolset.web_search_source.codex"
         | "toolset.web_search_source.kimi_platform"
         | "toolset.web_search_source.kimi_code"
-        | "toolset.web_search_source.fireworks" => {
+        | "toolset.web_search_source.fireworks"
+        | "toolset.web_search_source.opencode_go" => {
             use xai_grok_shell::tools::config::WebSearchSourceTarget;
             let target = match key {
                 "toolset.web_search_source.xai" => WebSearchSourceTarget::Xai,
                 "toolset.web_search_source.codex" => WebSearchSourceTarget::Codex,
                 "toolset.web_search_source.kimi_platform" => WebSearchSourceTarget::KimiPlatform,
                 "toolset.web_search_source.fireworks" => WebSearchSourceTarget::Fireworks,
+                "toolset.web_search_source.opencode_go" => WebSearchSourceTarget::OpenCodeGo,
                 _ => WebSearchSourceTarget::KimiCode,
             };
             Some(SettingValue::Enum(
@@ -891,7 +938,9 @@ pub fn default_value_for(meta: &SettingMeta) -> SettingValue {
         SettingKind::DynamicEnum { default, .. } => SettingValue::String((*default).to_string()),
         // Group rows carry no scalar value; the render/reset paths special-case
         // them before calling this, so the returned value is never observed.
-        SettingKind::Group { .. } => SettingValue::Bool(false),
+        SettingKind::Group { .. } | SettingKind::DynamicMultiSelect { .. } => {
+            SettingValue::Bool(false)
+        }
     }
 }
 
@@ -1142,12 +1191,20 @@ mod tests {
                     );
                 }
                 (
-                    "kimi_api_key" | "kimi_code_api_key" | "fireworks_api_key"
+                    "kimi_api_key"
+                    | "kimi_code_api_key"
+                    | "fireworks_api_key"
+                    | "opencode_go_api_key"
                     | "perplexity_api_key",
                     SettingKind::Secret,
                 ) => {
                     // Credential presence is pager-local runtime state rather than UiConfig.
                     // `every_setting_has_dispatch_arm` pins the SecretStatus mapping.
+                }
+                ("opencode_go_models", SettingKind::DynamicMultiSelect { .. }) => {
+                    // Dynamic multi-select has no scalar registry default; the
+                    // empty enabled list is pinned by PagerLocalSnapshot::default
+                    // and the shell config default.
                 }
                 ("recap_model" | "memory_model", SettingKind::DynamicEnum { default, .. }) => {
                     assert_eq!(
@@ -1477,6 +1534,12 @@ mod tests {
                         default,
                         "Antigravity full access defaults ON (agy skip-permissions); \
                          the row is the read-only opt-out"
+                    );
+                }
+                ("toolset.web_search_source.opencode_go", SettingKind::Enum { default, .. }) => {
+                    assert_eq!(
+                        *default, "xai",
+                        "OpenCode Go sessions default to xAI search"
                     );
                 }
                 (key, SettingKind::Bool { default }) if is_local_feature_flag(key) => {

@@ -359,6 +359,7 @@ pub enum WebSearchSourceTarget {
     KimiPlatform,
     KimiCode,
     Fireworks,
+    OpenCodeGo,
 }
 
 impl WebSearchSourceTarget {
@@ -376,6 +377,7 @@ impl WebSearchSourceTarget {
                 crate::kimi_models::KimiApiEndpoint::Code => Self::KimiCode,
             },
             ModelProvider::Fireworks => Self::Fireworks,
+            ModelProvider::OpenCodeGo => Self::OpenCodeGo,
         }
     }
 }
@@ -391,6 +393,7 @@ pub struct WebSearchSourceConfig {
     pub kimi_platform: Option<WebSearchSource>,
     pub kimi_code: Option<WebSearchSource>,
     pub fireworks: Option<WebSearchSource>,
+    pub opencode_go: Option<WebSearchSource>,
 }
 
 impl WebSearchSourceConfig {
@@ -402,6 +405,7 @@ impl WebSearchSourceConfig {
             WebSearchSourceTarget::KimiPlatform => self.kimi_platform,
             WebSearchSourceTarget::KimiCode => self.kimi_code,
             WebSearchSourceTarget::Fireworks => self.fireworks,
+            WebSearchSourceTarget::OpenCodeGo => self.opencode_go,
         }
     }
 
@@ -413,7 +417,8 @@ impl WebSearchSourceConfig {
             WebSearchSourceTarget::Xai
             | WebSearchSourceTarget::KimiPlatform
             | WebSearchSourceTarget::KimiCode
-            | WebSearchSourceTarget::Fireworks => WebSearchSource::Xai,
+            | WebSearchSourceTarget::Fireworks
+            | WebSearchSourceTarget::OpenCodeGo => WebSearchSource::Xai,
         }
     }
 
@@ -431,6 +436,7 @@ impl WebSearchSourceConfig {
             WebSearchSourceTarget::KimiPlatform => self.kimi_platform = source,
             WebSearchSourceTarget::KimiCode => self.kimi_code = source,
             WebSearchSourceTarget::Fireworks => self.fireworks = source,
+            WebSearchSourceTarget::OpenCodeGo => self.opencode_go = source,
         }
     }
 }
@@ -515,7 +521,9 @@ impl WebSearchCandidates {
             }
             // The legacy Perplexity toggle is a Kimi-only alias; Fireworks
             // requires an explicit Perplexity selection.
-            WebSearchSourceTarget::Xai | WebSearchSourceTarget::Fireworks => WebSearchSource::Xai,
+            WebSearchSourceTarget::Xai
+            | WebSearchSourceTarget::Fireworks
+            | WebSearchSourceTarget::OpenCodeGo => WebSearchSource::Xai,
         }
     }
 
@@ -540,9 +548,10 @@ impl WebSearchCandidates {
             WebSearchSource::Native => match provider {
                 // Codex native search is the hosted server-side declaration;
                 // no client tool. Kimi and Fireworks have no native search.
-                ModelProvider::Codex | ModelProvider::Kimi | ModelProvider::Fireworks => {
-                    WebSearchConfig::Disabled
-                }
+                ModelProvider::Codex
+                | ModelProvider::Kimi
+                | ModelProvider::Fireworks
+                | ModelProvider::OpenCodeGo => WebSearchConfig::Disabled,
                 // For xAI, "native" and the xAI client tool are the same
                 // service — keep the client declaration as today.
                 ModelProvider::Xai => self.xai.clone(),

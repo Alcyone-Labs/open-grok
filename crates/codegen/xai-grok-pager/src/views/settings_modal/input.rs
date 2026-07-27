@@ -7,7 +7,8 @@ use super::render::int_step_sizes;
 use super::state::{
     RowEntry, SettingsEntryPoint, SettingsKeyOutcome, SettingsModalState, SettingsMode,
     SettingsModeKind, action_for_bool, action_for_enum, action_for_enum_commit, action_for_int,
-    action_for_string, effective_enum_choices, group_children, validate_string,
+    action_for_string, dynamic_group_choices, effective_enum_choices, group_children,
+    validate_string,
 };
 use crate::app::actions::Action;
 use crate::input::line_editor::LineEditOutcome;
@@ -229,7 +230,13 @@ fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
         _ => unreachable!("group handler requires PickingGroup state"),
     };
     let children = group_children(state, group_key);
-    if children.is_empty() {
+    let dynamic_choices = dynamic_group_choices(state, group_key);
+    let choice_len = if dynamic_choices.is_empty() {
+        children.len()
+    } else {
+        dynamic_choices.len()
+    };
+    if choice_len == 0 {
         // Defensive: a group with no children can't be navigated — back out.
         state.transition_to_browse();
         return SettingsKeyOutcome::Changed;
@@ -237,7 +244,7 @@ fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
 
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => {
-            if child_idx + 1 >= children.len() {
+            if child_idx + 1 >= choice_len {
                 return SettingsKeyOutcome::Unchanged;
             }
             state.transition_to_picking_group(group_key, child_idx + 1);
@@ -254,6 +261,9 @@ fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
         // user can flip several tips in a row. The dispatcher refreshes the
         // modal snapshot, so the new value paints on the next frame.
         KeyCode::Char(' ') | KeyCode::Enter => {
+            if !dynamic_choices.is_empty() {
+                return toggle_dynamic_multi_select(state, group_key, child_idx, &dynamic_choices);
+            }
             let Some(child_key) = children.get(child_idx).copied() else {
                 return SettingsKeyOutcome::Unchanged;
             };
@@ -272,6 +282,35 @@ fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
         }
         _ => SettingsKeyOutcome::Unchanged,
     }
+}
+
+fn toggle_dynamic_multi_select(
+    state: &SettingsModalState,
+    group_key: SettingKey,
+    choice_idx: usize,
+    choices: &[crate::settings::OwnedMultiSelectChoice],
+) -> SettingsKeyOutcome {
+    if group_key != "opencode_go_models" {
+        return SettingsKeyOutcome::Unchanged;
+    }
+    let Some(choice) = choices.get(choice_idx) else {
+        return SettingsKeyOutcome::Unchanged;
+    };
+    let mut enabled = state.pager_snapshot.opencode_go_enabled_models.clone();
+    enabled.retain(|value| {
+        value != &choice.canonical
+            && !state
+                .pager_snapshot
+                .opencode_go_models
+                .iter()
+                .any(|model| model.id == choice.canonical && &model.key == value)
+    });
+    if !choice.selected {
+        enabled.push(choice.canonical.clone());
+    }
+    enabled.sort();
+    enabled.dedup();
+    SettingsKeyOutcome::Action(Action::SetOpenCodeGoEnabledModels { models: enabled })
 }
 
 /// Common nav body for Up/Down (and j/k aliases) in the picker:
@@ -494,6 +533,15 @@ fn handle_editing_secret(state: &mut SettingsModalState, key: &KeyEvent) -> Sett
             }
             if setting_key == "fireworks_api_key" {
                 let action = Action::SetFireworksApiKey { key: secret };
+                return if state.entry_point == SettingsEntryPoint::ProviderLogin {
+                    SettingsKeyOutcome::ActionAndClose(action)
+                } else {
+                    state.transition_to_browse();
+                    SettingsKeyOutcome::Action(action)
+                };
+            }
+            if setting_key == "opencode_go_api_key" {
+                let action = Action::SetOpenCodeGoApiKey { key: secret };
                 return if state.entry_point == SettingsEntryPoint::ProviderLogin {
                     SettingsKeyOutcome::ActionAndClose(action)
                 } else {
@@ -1470,6 +1518,7 @@ fn handle_group_mouse(
         _ => unreachable!("group mouse handler requires PickingGroup state"),
     };
     let children = group_children(state, group_key);
+    let dynamic_choices = dynamic_group_choices(state, group_key);
     let clicked_idx = state
         .picker_choice_rects
         .iter()
@@ -1478,6 +1527,9 @@ fn handle_group_mouse(
         return SettingsKeyOutcome::Unchanged;
     };
     state.transition_to_picking_group(group_key, idx);
+    if !dynamic_choices.is_empty() {
+        return toggle_dynamic_multi_select(state, group_key, idx, &dynamic_choices);
+    }
     let Some(child_key) = children.get(idx).copied() else {
         return SettingsKeyOutcome::Changed;
     };
