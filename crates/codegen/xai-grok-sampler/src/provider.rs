@@ -347,6 +347,11 @@ impl ProviderAdapter for FireworksProvider {
         for message in &mut request.messages {
             message.model_id = None;
         }
+        if let Some(tools) = &mut request.tools {
+            for tool in tools {
+                normalize_fireworks_schema(&mut tool.function.parameters);
+            }
+        }
     }
 }
 
@@ -363,6 +368,96 @@ impl ProviderAdapter for OpenCodeGoProvider {
             message.model_id = None;
         }
     }
+}
+
+fn normalize_fireworks_schema(schema: &mut Value) {
+    match schema {
+        Value::Bool(true) => {
+            *schema = fireworks_unconstrained_schema();
+        }
+        Value::Array(items) => {
+            for item in items {
+                normalize_fireworks_schema(item);
+            }
+        }
+        Value::Object(object) => {
+            for keyword in [
+                "additionalProperties",
+                "contains",
+                "else",
+                "if",
+                "items",
+                "not",
+                "propertyNames",
+                "then",
+                "unevaluatedItems",
+                "unevaluatedProperties",
+            ] {
+                if let Some(child) = object.get_mut(keyword) {
+                    normalize_fireworks_schema(child);
+                }
+            }
+            for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let Some(Value::Array(children)) = object.get_mut(keyword) {
+                    for child in children {
+                        normalize_fireworks_schema(child);
+                    }
+                }
+            }
+            for keyword in [
+                "$defs",
+                "definitions",
+                "dependentSchemas",
+                "patternProperties",
+                "properties",
+            ] {
+                if let Some(Value::Object(children)) = object.get_mut(keyword) {
+                    for child in children.values_mut() {
+                        normalize_fireworks_schema(child);
+                    }
+                }
+            }
+
+            if object.keys().all(|key| is_schema_annotation(key)) {
+                object.insert(
+                    "anyOf".to_owned(),
+                    fireworks_unconstrained_schema()["anyOf"].clone(),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_schema_annotation(keyword: &str) -> bool {
+    matches!(
+        keyword,
+        "$anchor"
+            | "$comment"
+            | "$id"
+            | "$schema"
+            | "default"
+            | "deprecated"
+            | "description"
+            | "examples"
+            | "readOnly"
+            | "title"
+            | "writeOnly"
+    )
+}
+
+fn fireworks_unconstrained_schema() -> Value {
+    serde_json::json!({
+        "anyOf": [
+            {"type": "null"},
+            {"type": "boolean"},
+            {"type": "integer"},
+            {"type": "number"},
+            {"type": "string"},
+            {"type": "array"},
+            {"type": "object"}
+        ]
+    })
 }
 
 /// One entry in the built-in provider registry.
@@ -712,6 +807,41 @@ mod tests {
         provider_adapter(ModelProvider::Fireworks).sanitize_chat_request(&mut request);
         assert_eq!(request.temperature, Some(0.7));
         assert_eq!(request.top_p, Some(0.95));
+    }
+
+    #[test]
+    fn fireworks_expands_annotation_only_tool_schemas() {
+        use xai_grok_sampling_types::types::ToolDefinition;
+
+        let mut request =
+            ChatCompletionRequest::new("accounts/fireworks/models/glm-5p2", Vec::new()).with_tools(
+                vec![ToolDefinition::function(
+                    "workflow",
+                    Some("Launch a workflow"),
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "args": {
+                                "description": "JSON value bound to the script's args global.",
+                                "default": null
+                            },
+                            "name": {"type": "string"}
+                        }
+                    }),
+                )],
+            );
+
+        provider_adapter(ModelProvider::Fireworks).sanitize_chat_request(&mut request);
+
+        let parameters = &request.tools.as_ref().unwrap()[0].function.parameters;
+        let args = &parameters["properties"]["args"];
+        assert_eq!(args["default"], Value::Null);
+        assert_eq!(
+            args["description"],
+            "JSON value bound to the script's args global."
+        );
+        assert_eq!(args["anyOf"].as_array().unwrap().len(), 7);
+        assert_eq!(parameters["properties"]["name"]["type"], "string");
     }
 
     #[test]
