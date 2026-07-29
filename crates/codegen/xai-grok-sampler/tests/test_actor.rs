@@ -274,7 +274,7 @@ async fn submit_emits_started_first_token_channel_completed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chat_stream_without_chunk_id_completes_without_retry() {
+async fn chat_stream_without_unused_chunk_metadata_completes_without_retry() {
     let counter = Arc::new(AtomicU32::new(0));
     let counter_handler = Arc::clone(&counter);
     let app = Router::new().route(
@@ -285,8 +285,6 @@ async fn chat_stream_without_chunk_id_completes_without_retry() {
                 counter.fetch_add(1, Ordering::SeqCst);
                 let chunks = [
                     json!({
-                        "object": "chat.completion.chunk",
-                        "created": 1,
                         "model": "deepseek-v4-pro",
                         "choices": [{
                             "index": 0,
@@ -295,8 +293,6 @@ async fn chat_stream_without_chunk_id_completes_without_retry() {
                         }]
                     }),
                     json!({
-                        "object": "chat.completion.chunk",
-                        "created": 1,
                         "model": "deepseek-v4-pro",
                         "choices": [{
                             "index": 0,
@@ -321,9 +317,12 @@ async fn chat_stream_without_chunk_id_completes_without_retry() {
     let handle = SamplerActor::spawn(config, RetryPolicy::default(), event_tx);
 
     let (response, _) = handle
-        .submit_and_collect(RequestId::from("req-missing-chunk-id"), user_request("hi"))
+        .submit_and_collect(
+            RequestId::from("req-missing-chunk-metadata"),
+            user_request("hi"),
+        )
         .await
-        .expect("OpenCode Go stream without chunk ids should complete");
+        .expect("OpenCode Go stream without unused chunk metadata should complete");
     server.shutdown();
 
     assert_eq!(response.assistant().unwrap().content.as_ref(), "hello");

@@ -459,7 +459,9 @@ pub struct CompletionTokensDetails {
 pub struct ChatCompletionChunk {
     #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub object: String,
+    #[serde(default)]
     pub created: u64,
     pub model: String,
     pub choices: Vec<ChatChunkChoice>,
@@ -1975,11 +1977,9 @@ mod tests {
     }
 
     #[test]
-    fn test_chat_completion_chunk_deserializes_without_id() {
+    fn test_chat_completion_chunk_deserializes_without_unused_metadata() {
         let chunk: ChatCompletionChunk = serde_json::from_str(
             r#"{
-                "object": "chat.completion.chunk",
-                "created": 1,
                 "model": "deepseek-v4-pro",
                 "choices": [{
                     "index": 0,
@@ -1988,9 +1988,11 @@ mod tests {
                 }]
             }"#,
         )
-        .expect("OpenAI-compatible streams may omit the unused chunk id");
+        .expect("OpenAI-compatible streams may omit unused chunk metadata");
 
         assert!(chunk.id.is_empty());
+        assert!(chunk.object.is_empty());
+        assert_eq!(chunk.created, 0);
         assert_eq!(chunk.model, "deepseek-v4-pro");
         assert_eq!(chunk.choices.len(), 1);
     }
