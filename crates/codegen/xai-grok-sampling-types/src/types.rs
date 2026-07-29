@@ -457,6 +457,7 @@ pub struct CompletionTokensDetails {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionChunk {
+    #[serde(default)]
     pub id: String,
     pub object: String,
     pub created: u64,
@@ -1971,6 +1972,27 @@ mod tests {
         assert_eq!(delta.role, Some(Role::Assistant));
         assert_eq!(delta.content, Some("".to_string()));
         assert!(delta.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_chat_completion_chunk_deserializes_without_id() {
+        let chunk: ChatCompletionChunk = serde_json::from_str(
+            r#"{
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "deepseek-v4-pro",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": "hello"},
+                    "finish_reason": null
+                }]
+            }"#,
+        )
+        .expect("OpenAI-compatible streams may omit the unused chunk id");
+
+        assert!(chunk.id.is_empty());
+        assert_eq!(chunk.model, "deepseek-v4-pro");
+        assert_eq!(chunk.choices.len(), 1);
     }
 
     /// Regression test: cloning `Box<dyn TraceContext>` must not infinitely recurse.

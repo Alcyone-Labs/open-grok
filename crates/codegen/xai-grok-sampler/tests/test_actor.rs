@@ -274,6 +274,63 @@ async fn submit_emits_started_first_token_channel_completed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_stream_without_chunk_id_completes_without_retry() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let chunks = [
+                    json!({
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "deepseek-v4-pro",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "hello"},
+                            "finish_reason": null
+                        }]
+                    }),
+                    json!({
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "deepseek-v4-pro",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop"
+                        }]
+                    }),
+                ];
+                let events = chunks
+                    .into_iter()
+                    .map(|chunk| Event::default().data(chunk.to_string()))
+                    .chain(std::iter::once(Event::default().data("[DONE]")))
+                    .map(Ok::<_, std::convert::Infallible>);
+                Sse::new(stream::iter(events))
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut config = test_config(server.base_url(), "deepseek-v4-pro");
+    config.provider = ModelProvider::OpenCodeGo;
+    let handle = SamplerActor::spawn(config, RetryPolicy::default(), event_tx);
+
+    let (response, _) = handle
+        .submit_and_collect(RequestId::from("req-missing-chunk-id"), user_request("hi"))
+        .await
+        .expect("OpenCode Go stream without chunk ids should complete");
+    server.shutdown();
+
+    assert_eq!(response.assistant().unwrap().content.as_ref(), "hello");
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "must not retry");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kimi_chat_request_uses_provider_key_and_standard_function_tools() {
     use std::sync::Mutex;
 
