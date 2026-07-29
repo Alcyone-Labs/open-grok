@@ -463,6 +463,7 @@ pub struct ChatCompletionChunk {
     pub object: String,
     #[serde(default)]
     pub created: u64,
+    #[serde(default)]
     pub model: String,
     pub choices: Vec<ChatChunkChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1980,7 +1981,6 @@ mod tests {
     fn test_chat_completion_chunk_deserializes_without_unused_metadata() {
         let chunk: ChatCompletionChunk = serde_json::from_str(
             r#"{
-                "model": "deepseek-v4-pro",
                 "choices": [{
                     "index": 0,
                     "delta": {"role": "assistant", "content": "hello"},
@@ -1993,7 +1993,7 @@ mod tests {
         assert!(chunk.id.is_empty());
         assert!(chunk.object.is_empty());
         assert_eq!(chunk.created, 0);
-        assert_eq!(chunk.model, "deepseek-v4-pro");
+        assert!(chunk.model.is_empty());
         assert_eq!(chunk.choices.len(), 1);
     }
 

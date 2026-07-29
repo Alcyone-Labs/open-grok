@@ -293,7 +293,6 @@ async fn chat_stream_without_unused_chunk_metadata_completes_without_retry() {
                         }]
                     }),
                     json!({
-                        "model": "deepseek-v4-pro",
                         "choices": [{
                             "index": 0,
                             "delta": {},
@@ -325,7 +324,9 @@ async fn chat_stream_without_unused_chunk_metadata_completes_without_retry() {
         .expect("OpenCode Go stream without unused chunk metadata should complete");
     server.shutdown();
 
-    assert_eq!(response.assistant().unwrap().content.as_ref(), "hello");
+    let assistant = response.assistant().unwrap();
+    assert_eq!(assistant.content.as_ref(), "hello");
+    assert_eq!(assistant.model_id.as_deref(), Some("deepseek-v4-pro"));
     assert_eq!(counter.load(Ordering::SeqCst), 1, "must not retry");
 }
 
