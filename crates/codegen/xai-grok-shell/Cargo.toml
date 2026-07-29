@@ -191,6 +191,7 @@ windows = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 filetime = { workspace = true }
+pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 xai-grok-memory = { workspace = true, features = ["test-support"] }
 xai-grok-workspace = { workspace = true, features = ["test-support"] }
@@ -228,7 +229,10 @@ name = "fork_copy"
 harness = false
 required-features = ["test-support"]
 
-# Consume `session::testkit`, so they need the gate (on by default under Bazel).
+[[test]]
+name = "test_leader_soak"
+required-features = ["test-support"]
+
 [[test]]
 name = "test_session_load_memory"
 required-features = ["test-support"]

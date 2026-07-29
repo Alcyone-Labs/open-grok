@@ -274,7 +274,10 @@ mod tests {
             select_api_key(DEEPSEEK_API_BASE_URL, None, stored.clone()).as_deref(),
             Some("deepseek-stored-secret")
         );
-        assert_eq!(select_api_key("https://proxy.example/v1", None, stored), None);
+        assert_eq!(
+            select_api_key("https://proxy.example/v1", None, stored),
+            None
+        );
         assert_eq!(
             select_api_key(
                 "https://proxy.example/v1",

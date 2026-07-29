@@ -788,8 +788,7 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                     crate::app::subagent::finalize_finished_child_view(child_view, elapsed_dur);
                 }
             }
-            if !resuming {
-            }
+            if !resuming {}
             true
         }
         XaiSessionUpdate::HookAnnotation { message } => {
@@ -1060,8 +1059,7 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 .set_current(new_model_id.clone(), effort);
             agent.session.user_model_preference = Some(new_model_id.clone());
             if agent.session.provider_rebind_pending
-                && pending_rebind_provider
-                    .is_some_and(|provider| target_provider != Some(provider))
+                && pending_rebind_provider.is_some_and(|provider| target_provider != Some(provider))
             {
                 agent.session.provider_rebind_pending = false;
                 cancel_pending_provider_rebind = pending_rebind_provider;

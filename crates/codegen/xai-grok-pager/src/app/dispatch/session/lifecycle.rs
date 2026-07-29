@@ -401,6 +401,108 @@ pub(in crate::app::dispatch) fn dispatch_exit_session(app: &mut AppView) -> Vec<
     app.exit_session_pending = None;
     effects
 }
+/// Confirm deleting the parent session (not a subagent view).
+pub(in crate::app::dispatch) fn open_delete_current_session_question(
+    app: &mut AppView,
+) -> Vec<Effect> {
+    use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
+    use xai_grok_tools::implementations::grok_build::ask_user_question::{
+        Question, QuestionOption,
+    };
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    if agent.session.session_id.is_none() {
+        app.show_toast("No active session to delete");
+        return vec![];
+    }
+    if agent.question_view.is_some() {
+        app.show_toast("Finish answering the current question first");
+        return vec![];
+    }
+    let question = Question {
+        question: "Delete this session permanently?".into(),
+        id: None,
+        options: vec![
+            QuestionOption {
+                label: "Delete".into(),
+                description: "Remove history and return home".into(),
+                preview: None,
+                id: None,
+            },
+            QuestionOption {
+                label: "Cancel".into(),
+                description: "Keep the session".into(),
+                preview: None,
+                id: None,
+            },
+        ],
+        multi_select: Some(false),
+    };
+    let stashed = agent.prompt.stash();
+    agent.question_view = Some(
+        QuestionViewState::new(
+            format!("delete-session-{}", uuid::Uuid::new_v4()),
+            vec![question],
+            stashed,
+        )
+        .with_local_kind(LocalQuestionKind::DeleteCurrentSession)
+        .with_no_freeform(),
+    );
+    agent.prompt.set_text("");
+    vec![]
+}
+pub(in crate::app::dispatch) fn dispatch_delete_current_session_answered(
+    app: &mut AppView,
+    confirmed: bool,
+) -> Vec<Effect> {
+    if !confirmed {
+        return vec![];
+    }
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some((session_id, cwd, running_bg_tasks)) = app.agents.get(&id).and_then(|agent| {
+        let session_id = agent.session.session_id.clone()?;
+        let cwd = agent.session.cwd.display().to_string();
+        let running_bg_tasks: Vec<String> = agent
+            .session
+            .bg_tasks
+            .values()
+            .filter(|t| t.status == crate::app::agent::BgTaskStatus::Running)
+            .map(|t| t.task_id.clone())
+            .collect();
+        Some((session_id, cwd, running_bg_tasks))
+    }) else {
+        app.show_toast("No active session to delete");
+        return vec![];
+    };
+    let mut effects = vec![Effect::CancelTurn {
+        session_id: session_id.clone(),
+        cancel_subagents: true,
+        trigger: None,
+        rewind_if_pristine: false,
+    }];
+    effects.extend(
+        running_bg_tasks
+            .into_iter()
+            .map(|task_id| Effect::KillBgTask {
+                session_id: session_id.clone(),
+                task_id,
+            }),
+    );
+    app.show_toast("Deleting session\u{2026}");
+    effects.push(Effect::DeleteSession {
+        source: "current".into(),
+        session_id: session_id.to_string(),
+        cwd,
+        after: crate::app::actions::AfterSessionDelete::Welcome,
+    });
+    effects
+}
 /// Handle the user accepting the folder-trust question: persist the grant for
 /// the workspace (writes `~/.opengrok/trusted_folders.toml`), mark trust resolved,
 /// then replay any deferred session startup (only if auth is also done).
@@ -816,6 +918,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
     agent_id: AgentId,
     session_id: acp::SessionId,
     new_models: Option<acp::SessionModelState>,
+    scheduler_background_loops: Option<bool>,
 ) -> Vec<Effect> {
     app.startup_model_override = None;
     if let Some(models) = new_models {
@@ -846,6 +949,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
             )));
         }
         agent.bind_session_id(session_id);
+        agent.scheduler_background_loops = scheduler_background_loops;
         let deferred = apply_deferred_model_switch(agent, app.cli_effort_token.as_deref());
         let deferred_mode = agent.deferred_session_mode.take();
         let cwd = agent.session.cwd.clone();
@@ -938,6 +1042,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
     worktree_path: std::path::PathBuf,
     session_cwd: std::path::PathBuf,
     new_models: Option<acp::SessionModelState>,
+    scheduler_background_loops: Option<bool>,
 ) -> Vec<Effect> {
     app.startup_model_override = None;
     if let Some(models) = new_models {
@@ -953,6 +1058,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         agent.mark_turn_finished();
         let session_id_clone = session_id.clone();
         agent.bind_session_id(session_id);
+        agent.scheduler_background_loops = scheduler_background_loops;
         agent.session.cwd = session_cwd.clone();
         agent.session.is_worktree = true;
         agent.prompt.file_search.retarget(&session_cwd);

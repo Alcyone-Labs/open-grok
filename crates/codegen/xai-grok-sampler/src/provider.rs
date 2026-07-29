@@ -793,11 +793,7 @@ mod tests {
     fn deepseek_strips_internal_message_model_ids() {
         use xai_grok_sampling_types::types::ChatRequestMessage;
 
-        let assistant = ChatRequestMessage::assistant(
-            "previous turn",
-            "deepseek-v4-pro",
-            None,
-        );
+        let assistant = ChatRequestMessage::assistant("previous turn", "deepseek-v4-pro", None);
         assert!(assistant.model_id.is_some(), "constructor stamps model_id");
         let mut request = ChatCompletionRequest::new("deepseek-v4-pro", vec![assistant]);
 

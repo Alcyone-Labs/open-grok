@@ -444,11 +444,11 @@ mod tests {
         let custom = std::env::temp_dir().join("grok-home-display-regression");
         assert_eq!(
             display_user_grok_path_for(&custom, "config.toml"),
-            "$GROK_HOME/config.toml"
+            "$OPENGROK_HOME/config.toml"
         );
         assert_eq!(
             display_user_grok_path_for(&custom, "sandbox.toml"),
-            "$GROK_HOME/sandbox.toml"
+            "$OPENGROK_HOME/sandbox.toml"
         );
     }
 

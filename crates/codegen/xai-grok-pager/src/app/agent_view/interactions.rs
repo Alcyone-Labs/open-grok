@@ -1986,4 +1986,3 @@ mod question_freeform_chip_tests {
         assert_eq!(paste_chip_count(&agent), 1, "chip must stay folded");
     }
 }
-

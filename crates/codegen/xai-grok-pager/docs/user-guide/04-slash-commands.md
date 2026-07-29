@@ -18,6 +18,12 @@ Start a fresh session and clear the current conversation. Alias: `/clear`.
 
 Open the session picker to reload a previous session from disk.
 
+### `/dashboard`
+
+Open the [Agent Dashboard](23-dashboard.md): live roster of top-level sessions in this pager (peek, reply, dispatch, pin, rename, stop, attach). Aliases: `/agents-dashboard`, `/sessions`.
+
+Not `/config-agents` (alias `/agents`), which manages agent *definitions* and personas. Hidden in minimal mode; disable with `GROK_AGENT_DASHBOARD=0` or `[dashboard].enabled = false`.
+
 ### `/compact [context]`
 
 Compress conversation history to reclaim context-window space. Pass a note to tell Grok what to keep:
@@ -79,6 +85,12 @@ Quit the application. Alias: `/exit`.
 ### `/home`
 
 Leave the current session and return to the welcome screen. Alias: `/welcome`.
+
+### `/delete`
+
+Delete the current session's history and return to the welcome screen. Confirms first.
+
+To delete a session you are not in, open `/resume` and press `d` then `y`.
 
 ### `/rename`
 
@@ -382,6 +394,8 @@ Open the Claude import modal to bring over `~/.claude` settings: permissions, en
 
 Open the agents modal to view and manage agent definitions, set the default, and switch the active one. Alias: `/agents`.
 
+Not the live multi-session [Agent Dashboard](23-dashboard.md) (`/dashboard` / `Ctrl+\`).
+
 ### `/personas`
 
 Create, edit, and delete personas. A subagent can apply a persona to shape how it behaves.
@@ -423,15 +437,14 @@ alter the other. `/usage manage` opens xAI billing management. Alias: `/cost`.
 
 ### `/privacy`
 
-Show or toggle privacy and data-retention status.
+Open Settings on **Coding data, retention, and training**, where you choose
+**Opt in** or **Opt out**. Takes no arguments.
 
 ```
 /privacy
-/privacy opt-in
-/privacy opt-out
 ```
 
-`/privacy` doesn't touch `[features] telemetry`, `trace_upload`, or your external OTEL settings — see [Monitoring Usage](24-monitoring-usage.md#related-settings). On team accounts, only a team admin can toggle privacy this way, and admins can also enable or disable Zero Data Retention for the team ([how to enable ZDR](https://docs.x.ai/developers/faq/security#how-to-enable-zdr)).
+This setting doesn't touch `[features] telemetry`, `trace_upload`, or your external OTEL settings — see [Monitoring Usage](24-monitoring-usage.md#related-settings). When ZDR or organization policy locks the choice, the row says `ZDR` or `· Policy Managed` instead of opening the chooser.
 
 ---
 

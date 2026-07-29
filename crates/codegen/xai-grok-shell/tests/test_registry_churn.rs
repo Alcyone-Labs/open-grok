@@ -32,6 +32,8 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(60);
 struct Counts {
     sessions: usize,
     session_threads: usize,
+    resident_resources: usize,
+    retained_resources: usize,
     dispatch_locks: usize,
     session_turn_numbers: usize,
     permission_event_receivers: usize,
@@ -254,6 +256,12 @@ fn session_churn_returns_registry_snapshot_to_baseline() {
         assert_eq!(
             baseline.sessions, 0,
             "warmup session must be fully removed before baseline"
+        );
+        assert_eq!(
+            (baseline.resident_resources, baseline.retained_resources),
+            (0, 0),
+            "warmup must leave no per-session resource entries, including \
+             entries holding no resources"
         );
         assert_eq!(
             baseline.workspace_bindings,

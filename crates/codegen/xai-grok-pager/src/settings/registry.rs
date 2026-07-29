@@ -318,14 +318,14 @@ pub enum SettingValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodingDataSharingLock {
     Zdr,
-    TeamManaged,
+    PolicyLock,
 }
 
 impl CodingDataSharingLock {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Zdr => "Your team has Zero Data Retention.",
-            Self::TeamManaged => "Managed by your team admin.",
+            Self::PolicyLock => "Locked by your organization's policy.",
         }
     }
 }
@@ -420,6 +420,11 @@ pub struct PagerLocalSnapshot {
     /// The settings setter updates this map optimistically while persistence
     /// runs, then the success/failure path refreshes it from disk.
     pub local_feature_flags: std::collections::BTreeMap<SettingKey, bool>,
+    /// Mirrors `AgentView::scheduler_background_loops` — the value the shell
+    /// pinned for THIS session — falling back to
+    /// `AppView::scheduler_background_loops_seed` before the session response
+    /// lands. `/loop` reads it to describe where a scheduled fire runs.
+    pub scheduler_background_loops: bool,
 }
 
 impl Default for PagerLocalSnapshot {
@@ -465,6 +470,8 @@ impl Default for PagerLocalSnapshot {
                 .iter()
                 .map(|spec| (spec.key, spec.default))
                 .collect(),
+            // Matches `resolve_scheduler_background_loops`'s default.
+            scheduler_background_loops: true,
         }
     }
 }
@@ -930,6 +937,11 @@ pub fn current_value_for(
 
         _ => None,
     }
+}
+
+/// Consent chooser: no docs tip, and no `d` reset (hint or key).
+pub fn is_consent_chooser(key: &str) -> bool {
+    key == "coding_data_sharing"
 }
 
 /// Default value for `key`, derived from the registry metadata.
@@ -1544,10 +1556,7 @@ mod tests {
                     );
                 }
                 ("toolset.web_search_source.deepseek", SettingKind::Enum { default, .. }) => {
-                    assert_eq!(
-                        *default, "xai",
-                        "DeepSeek sessions default to xAI search"
-                    );
+                    assert_eq!(*default, "xai", "DeepSeek sessions default to xAI search");
                 }
                 ("toolset.web_search_source.opencode_go", SettingKind::Enum { default, .. }) => {
                     assert_eq!(

@@ -335,7 +335,6 @@ impl SessionEventBlock {
         }
     }
 
-
     /// Whether any attached stop hook actually ran (non-skipped). Gates the
     /// fold/selection affordances and the inline summary, mirroring
     /// [`ToolCallHookData::has_content`](super::tool::ToolCallHookData::has_content).

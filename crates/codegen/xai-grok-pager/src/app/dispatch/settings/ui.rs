@@ -108,6 +108,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
+    let scheduler_background_loops_seed = app.scheduler_background_loops_seed;
     let recap_model_from_app = app.recap_model.clone();
     let memory_model_from_app = app.memory_model.clone();
     let kimi_api_key_status = kimi_api_key_status();
@@ -178,6 +179,9 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
                 voice_stt_language: voice_stt_language_from_app.clone(),
                 local_feature_flags: local_feature_flags.clone(),
+                scheduler_background_loops: agent
+                    .scheduler_background_loops
+                    .unwrap_or(scheduler_background_loops_seed),
             };
         }
     }
@@ -286,6 +290,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
+    let scheduler_background_loops_seed = app.scheduler_background_loops_seed;
     let recap_model_from_app = app.recap_model.clone();
     let memory_model_from_app = app.memory_model.clone();
     let kimi_api_key_status = kimi_api_key_status();
@@ -364,6 +369,9 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
         ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
         voice_stt_language: voice_stt_language_from_app,
         local_feature_flags: xai_grok_shell::util::config::load_local_feature_flags_sync(),
+        scheduler_background_loops: agent
+            .scheduler_background_loops
+            .unwrap_or(scheduler_background_loops_seed),
     };
     let mut state = Box::new(SettingsModalState::new(
         registry,
@@ -373,8 +381,8 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
     if let Some(key) = focus_key
         && state.focus_key(key)
     {
-        // Land directly on the setting's chooser page (e.g. the coding data
-        // sharing opt-in/out picker), not just the focused browse row.
+        // Try the chooser; a locked row keeps Browse (`try_enter_picking_enum`
+        // refuses when `row_lock` is set).
         state.try_enter_picking_enum();
     }
     agent.active_modal = Some(ActiveModal::Settings { state });
@@ -923,6 +931,20 @@ fn agent_auto_mode(app: &AppView) -> bool {
     false
 }
 
+/// Effective `scheduler_background_loops` for the active agent: the value the
+/// shell pinned for that session, falling back to the startup seed while the
+/// session response is still in flight (or with no agent at all). See
+/// [`agent_multiline_mode`] for the no-agent fallback rationale.
+fn agent_scheduler_background_loops(app: &AppView) -> bool {
+    if let ActiveView::Agent(id) = app.active_view
+        && let Some(agent) = app.agents.get(&id)
+        && let Some(value) = agent.scheduler_background_loops
+    {
+        return value;
+    }
+    app.scheduler_background_loops_seed
+}
+
 /// Effective `plan_mode` for the active agent
 /// (`pending.unwrap_or(active)`).
 fn agent_plan_mode(app: &AppView) -> bool {
@@ -1007,6 +1029,7 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         ask_user_question_timeout_enabled: app.ask_user_question_timeout_enabled,
         voice_stt_language: app.voice_config.language.clone(),
         local_feature_flags: xai_grok_shell::util::config::load_local_feature_flags_sync(),
+        scheduler_background_loops: agent_scheduler_background_loops(app),
     }
 }
 

@@ -2178,7 +2178,7 @@ mod tests {
             std::env::remove_var(GROK_COPY_FILE_ENV);
         }
         let path = default_copy_fallback_path();
-        // Test envs always resolve a home (or set GROK_HOME).
+        // Test envs always resolve a home (or set OPENGROK_HOME).
         let expected = xai_grok_config::user_grok_home()
             .expect("home resolves in tests")
             .join("last-copy.txt");
@@ -2187,14 +2187,14 @@ mod tests {
 
     /// Toast paths collapse the home prefix to `~` (grok-home paths go
     /// through the shared `abbreviate_path` convention, covered further by
-    /// the `GROK_HOME`-override integration test in `xai-grok-pager`).
+    /// the `OPENGROK_HOME`-override integration test in `xai-grok-pager`).
     #[test]
     fn display_copy_path_abbreviates_home() {
-        if std::env::var_os("GROK_HOME").is_none() {
+        if std::env::var_os("OPENGROK_HOME").is_none() {
             let home = dirs::home_dir().expect("home resolves in tests");
             assert_eq!(
-                display_copy_path(&home.join(".grok").join("last-copy.txt")),
-                "~/.grok/last-copy.txt"
+                display_copy_path(&home.join(".opengrok").join("last-copy.txt")),
+                "~/.opengrok/last-copy.txt"
             );
         }
         // Non-home paths pass through untouched — including multi-byte

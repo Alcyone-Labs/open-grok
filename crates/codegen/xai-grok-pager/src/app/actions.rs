@@ -78,6 +78,11 @@ pub enum Action {
     ExitSession,
     /// Exit session without double-press confirmation (e.g., from command palette).
     ExitSessionConfirmed,
+    /// `/delete`: confirm, then delete history and return home.
+    DeleteCurrentSession,
+    DeleteCurrentSessionAnswered {
+        confirmed: bool,
+    },
     /// Open grok.com in the browser for SuperGrok subscription upsell.
     OpenSupergrokUrl,
     /// Re-check subscription status via the shell's `x.ai/auth/check_subscription`.
@@ -691,14 +696,15 @@ pub enum Action {
     /// Open the settings modal (F2, `/settings`, command palette).
     /// If already open, closes it instead of stacking.
     OpenSettings,
-    /// Open settings focused on a registry key (e.g. privacy banner Customize).
+    /// Open settings on a registry key: its chooser, or the browse row when
+    /// the setting is locked.
     OpenSettingsFocus {
         key: &'static str,
     },
-    /// Welcome privacy banner Accept (opt-in; ack after ACP success).
-    PrivacyBannerAccept,
-    /// Welcome privacy banner Customize (ack + open settings on coding_data_sharing).
-    PrivacyBannerCustomize,
+    /// Privacy banner `[Opt in]` (ack only after ACP success).
+    PrivacyBannerOptIn,
+    /// Privacy banner `[Opt out]` (ack now, then record the decline).
+    PrivacyBannerOptOut,
     /// Open the command palette (`/help`). The keybinding path (Ctrl+P) opens it
     /// directly in `handle_agent_action`; this lets a slash command reach the
     /// same modal through dispatch.
@@ -857,8 +863,6 @@ pub enum Action {
     TriggerDeepSearch,
     /// Force an immediate deep content search, skipping the debounce.
     ForceDeepSearch,
-    /// Show privacy and data retention status.
-    ShowPrivacyInfo,
     SetCodingDataSharing {
         opted_in: bool,
     },
@@ -1504,6 +1508,14 @@ pub struct DoctorFixTarget {
     pub session_binding_epoch: u32,
     pub cwd: std::path::PathBuf,
 }
+/// Aftermath of a successful session delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterSessionDelete {
+    /// Picker delete — stay put.
+    Stay,
+    /// `/delete` — return to welcome.
+    Welcome,
+}
 #[derive(Debug)]
 pub enum Effect {
     /// Create a new ACP session.
@@ -1682,7 +1694,10 @@ pub enum Effect {
     /// [`TaskResult::SessionSearchDebounceExpired`] after a short sleep; the
     /// expiry acts only if `seq` is still current (Build: FTS5 deep search
     /// against the deep-search seq; chat: server refetch against the list seq).
-    DebounceSessionSearch { query: String, seq: u64 },
+    DebounceSessionSearch {
+        query: String,
+        seq: u64,
+    },
     /// Fetch the leader session roster (FleetView dashboard) via
     /// `x.ai/sessions/list`. Only issued in leader mode while the
     /// dashboard is open.
@@ -1792,11 +1807,17 @@ pub enum Effect {
         hidden_ids: std::collections::BTreeSet<String>,
     },
     /// Persist `[privacy].privacy_banner_acked` (RFC 3339 dismiss time).
-    PersistPrivacyBannerAcked { acked_at: String },
+    PersistPrivacyBannerAcked {
+        acked_at: String,
+    },
     /// Persist memory modal fullscreen preference to `[hints]` in config.toml.
-    PersistMemoryFullscreen { fullscreen: bool },
+    PersistMemoryFullscreen {
+        fullscreen: bool,
+    },
     /// Persist the project-picker opt-out to `[hints] project_picker_disabled`.
-    PersistProjectPickerDisabled { disabled: bool },
+    PersistProjectPickerDisabled {
+        disabled: bool,
+    },
     /// Persist the dashboard's `[dashboard]` configuration to `~/.opengrok/config.toml`.
     /// Edge case 15: multi-pager safe via `config_toml_edit::read_config_document_for_edit`,
     /// which loads → modifies → writes the whole document. Concurrent
@@ -1852,7 +1873,9 @@ pub enum Effect {
         prompt_id: String,
     },
     /// Toggle plan mode — fire-and-forget signal to the shell.
-    TogglePlanMode { session_id: acp::SessionId },
+    TogglePlanMode {
+        session_id: acp::SessionId,
+    },
     /// Remove a server-owned queued prompt: fire-and-forget
     /// `x.ai/queue/remove`. The agent re-broadcasts the authoritative queue.
     QueueRemove {
@@ -1867,7 +1890,9 @@ pub enum Effect {
     },
     /// Clear the caller's server-owned queued prompts: fire-and-forget
     /// `x.ai/queue/clear`.
-    QueueClear { session_id: acp::SessionId },
+    QueueClear {
+        session_id: acp::SessionId,
+    },
     /// Replace the text of a server-owned queued prompt in place: fire-and-forget
     /// `x.ai/queue/edit`. The session actor's serialized mailbox makes this
     /// last-writer-wins for concurrent edits; the rebroadcast of
@@ -1961,9 +1986,14 @@ pub enum Effect {
         force_interactive: bool,
     },
     /// Poll for auth URL from the agent (ext request).
-    PollAuthUrl { request_seq: u64 },
+    PollAuthUrl {
+        request_seq: u64,
+    },
     /// Submit a manually-pasted auth code (ext request).
-    SubmitAuthCode { request_seq: u64, code: String },
+    SubmitAuthCode {
+        request_seq: u64,
+        code: String,
+    },
     /// Fetch MCP server list from the shell (x.ai/mcp/list).
     FetchMcpsList {
         agent_id: AgentId,
@@ -2128,7 +2158,10 @@ pub enum Effect {
     /// Fetch current bundle cache status via `x.ai/bundle/status`.
     FetchBundleStatus,
     /// Fetch a bundled entry's raw content via `x.ai/bundle/entry/get`.
-    FetchCatalogEntry { kind: String, name: String },
+    FetchCatalogEntry {
+        kind: String,
+        name: String,
+    },
     /// Send feedback about the current session (fire-and-forget POST).
     SendFeedback {
         agent_id: AgentId,
@@ -2196,7 +2229,9 @@ pub enum Effect {
     },
     /// Cancel the shell-owned xAI interactive auth flow (`x.ai/auth/cancel`).
     /// Codex OAuth is pager-owned and must never produce this effect.
-    CancelAuth { request_seq: u64 },
+    CancelAuth {
+        request_seq: u64,
+    },
     /// Run the independent OpenAI Codex browser OAuth flow.
     LoginCodex {
         agent_id: Option<AgentId>,
@@ -2211,16 +2246,22 @@ pub enum Effect {
     /// Re-check subscription status via `x.ai/auth/check_subscription`.
     /// `verify` scopes the result to a deferred-gate verification (see
     /// [`crate::app::subscription`]); `None` for generic checks.
-    CheckSubscription { verify: Option<u64> },
+    CheckSubscription {
+        verify: Option<u64>,
+    },
     /// One-shot subscription re-check triggered by a credit-limit 403.
     /// If the tier changed, the stashed prompt is retried instead of
     /// showing the upsell modal.
-    CreditLimitRecheck { agent_id: AgentId },
+    CreditLimitRecheck {
+        agent_id: AgentId,
+    },
     /// Schedule a 5s timer that fires `TaskResult::PaywallCheckTick`.
     SchedulePaywallCheck,
     /// Schedule `TaskResult::GateVerifyTimeout { generation }` after
     /// [`crate::app::subscription::GATE_VERIFY_TIMEOUT`].
-    ScheduleGateVerifyTimeout { generation: u64 },
+    ScheduleGateVerifyTimeout {
+        generation: u64,
+    },
     /// Log out then authenticate sequentially in one task.
     SwitchAccount {
         request_seq: u64,
@@ -2228,7 +2269,9 @@ pub enum Effect {
         use_oauth: bool,
     },
     /// Clear the auth copy feedback after a delay if its generation is still current.
-    ScheduleClearAuthCopyFeedback { generation: u64 },
+    ScheduleClearAuthCopyFeedback {
+        generation: u64,
+    },
     /// Register the current session in the active-sessions crash-recovery
     /// registry (`~/.opengrok/active_sessions.json`).
     RegisterActiveSession {
@@ -2236,7 +2279,9 @@ pub enum Effect {
         cwd: String,
     },
     /// Unregister a session from the active-sessions registry (clean exit).
-    UnregisterActiveSession { session_id: acp::SessionId },
+    UnregisterActiveSession {
+        session_id: acp::SessionId,
+    },
     /// Quit the application.
     Quit,
     /// Toggle coding data sharing via ACP.
@@ -2245,6 +2290,11 @@ pub enum Effect {
         opted_in: bool,
         /// Pre-toggle value to revert to on failure.
         rollback_to_opted_in: bool,
+        /// Write generation, echoed back on the `TaskResult`. Writes to this
+        /// endpoint are concurrent, so a result that isn't the newest must
+        /// not touch state: its `rollback_to_opted_in` was captured against
+        /// a world that has since moved on.
+        seq: u64,
     },
     /// Rename the current session.
     RenameSession {
@@ -2259,9 +2309,13 @@ pub enum Effect {
         source: String,
         session_id: String,
         cwd: String,
+        after: AfterSessionDelete,
     },
     /// Deep-search sessions by content (FTS via ACP).
-    DeepSearchSessions { query: String, seq: u64 },
+    DeepSearchSessions {
+        query: String,
+        seq: u64,
+    },
     /// Call `x.ai/session/fork` to create a peer session that resumes
     /// from `parent_session_id` in the same cwd (no worktree). Mirror of
     /// the worktree branch of [`Effect::CreateWorktreeSession`]; the
@@ -2306,7 +2360,10 @@ pub enum Effect {
     /// When `silent` is true the result updates `credit_balance` without
     /// pushing a system message into scrollback (used for automatic refreshes
     /// on session init and after each turn).
-    FetchBilling { agent_id: AgentId, silent: bool },
+    FetchBilling {
+        agent_id: AgentId,
+        silent: bool,
+    },
     /// Fetch xAI billing and OpenAI Codex quota usage concurrently for the
     /// manual `/usage` summary. Each provider reports success independently.
     FetchUsage {
@@ -2331,9 +2388,15 @@ pub enum Effect {
     /// Spawn a debounce sleep task for shell suggestions. `agent_id` rides
     /// to the expiry so the fetch is built from the arming agent, not
     /// whatever view is active when the timer fires.
-    DebounceSuggestions { agent_id: AgentId, generation: u64 },
+    DebounceSuggestions {
+        agent_id: AgentId,
+        generation: u64,
+    },
     /// Spawn a debounce sleep task for plugin-CTA keyword matching.
-    DebouncePluginCta { agent_id: AgentId, generation: u64 },
+    DebouncePluginCta {
+        agent_id: AgentId,
+        generation: u64,
+    },
     /// Send an ACP `x.ai/suggest` request to the shell. `agent_id` is echoed
     /// on the result so the response routes to the agent that fetched, not
     /// whatever view is active when it lands.
@@ -2526,6 +2589,12 @@ pub enum TaskResult {
         agent_id: AgentId,
         session_id: acp::SessionId,
         models: Option<acp::SessionModelState>,
+        /// Whether this session's scheduled fires run detached, as the shell
+        /// resolved it at spawn (response
+        /// `_meta["x.ai/schedulerBackgroundLoops"]`). `None` from a shell that
+        /// predates the key. See
+        /// [`crate::app::effects::parse_session_scheduler_background_loops`].
+        scheduler_background_loops: Option<bool>,
     },
     /// Session creation failed.
     SessionFailed {
@@ -2541,6 +2610,8 @@ pub enum TaskResult {
         /// Effective cwd inside the worktree (preserves subdirectory offset).
         session_cwd: std::path::PathBuf,
         models: Option<acp::SessionModelState>,
+        /// See [`TaskResult::SessionCreated::scheduler_background_loops`].
+        scheduler_background_loops: Option<bool>,
     },
     /// Worktree created and session forked, but not yet loaded.
     /// The dispatch handler sets session_id eagerly, then emits LoadSession.
@@ -2572,6 +2643,10 @@ pub enum TaskResult {
         /// pass the live `session/update` gate without re-rendering the user
         /// block (replay already rendered it).
         running_prompt_id: Option<String>,
+        /// See [`TaskResult::SessionCreated::scheduler_background_loops`]. A
+        /// resumed session re-spawns its actor, so the load response carries
+        /// the value that spawn just pinned.
+        scheduler_background_loops: Option<bool>,
     },
     /// Session load (resume) failed.
     SessionLoadFailed {
@@ -2929,12 +3004,14 @@ pub enum TaskResult {
     CodingDataSharingUpdated {
         agent_id: AgentId,
         opted_in: bool,
+        seq: u64,
     },
     /// Coding data sharing update failed.
     CodingDataSharingFailed {
         agent_id: AgentId,
         error: String,
         rollback_to_opted_in: bool,
+        seq: u64,
     },
     /// Session rename completed successfully.
     RenameSessionComplete {
@@ -2950,6 +3027,7 @@ pub enum TaskResult {
     DeleteSessionComplete {
         source: String,
         session_id: String,
+        after: AfterSessionDelete,
     },
     /// Session delete failed.
     DeleteSessionFailed {

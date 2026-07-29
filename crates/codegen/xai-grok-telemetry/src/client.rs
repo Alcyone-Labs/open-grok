@@ -34,6 +34,16 @@ fn event_value(event_name: &str) -> &str {
     event_name
 }
 
+/// Product-analytics `$insert_id`: unique per emit, ≤36 bytes, `[A-Za-z0-9-]`.
+///
+/// Do not put the event name in this field. The analytics sink truncates to 36
+/// chars and rejects most other characters; a name-prefixed id either collapses
+/// to a constant (long names → per-user same-second dedup) or is dropped and
+/// regenerated (shorter names with `:`). A bare UUID always validates.
+fn product_analytics_insert_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 #[derive(Clone)]
 pub struct TelemetryClient {
     mode: TelemetryMode,
@@ -236,7 +246,7 @@ pub async fn track(event_name: &str, request_id: &str, ctx: &UserContext, mut me
     // Mixpanel path
     if let Some(ref mixpanel) = client.mixpanel {
         let time_secs = chrono::Utc::now().timestamp();
-        let insert_id = format!("{event_name}:{request_id}:{time_secs}");
+        let insert_id = product_analytics_insert_id();
 
         // Convert serde_json::Map to HashMap for mixpanel
         let mut props: std::collections::HashMap<String, serde_json::Value> =

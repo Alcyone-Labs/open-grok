@@ -1126,6 +1126,7 @@ mod tests {
             explicitly_killed: false,
             owner_session_id: None,
             description: None,
+            is_backgrounded: false,
         })
     }
     fn started_id(n: &ToolNotification) -> &str {

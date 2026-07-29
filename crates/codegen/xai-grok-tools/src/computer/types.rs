@@ -218,6 +218,9 @@ pub struct TaskSnapshot {
     /// Model-supplied label for task UI / snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// True after explicit/user/auto backgrounding; false for pure foreground runs.
+    #[serde(default)]
+    pub is_backgrounded: bool,
 }
 
 impl TaskSnapshot {
@@ -236,6 +239,11 @@ impl TaskSnapshot {
     /// backing work).
     pub fn is_outstanding(&self) -> bool {
         !self.completed
+    }
+
+    /// Incomplete and backgrounded — tray/`tasks_snapshot` predicate (not FG in-flight).
+    pub fn is_outstanding_background(&self) -> bool {
+        !self.completed && self.is_backgrounded
     }
 }
 
@@ -324,6 +332,11 @@ pub trait TerminalBackend: Send + Sync {
     }
 
     /// Wait for a background task to complete, with optional timeout.
+    ///
+    /// # Panics / overflow
+    /// Implementations may add `timeout` to `Instant::now()`. Callers must
+    /// bound `timeout` (e.g. via `capped_wait_timeout`) so the sum stays
+    /// representable; unbounded model `timeout_ms` can overflow.
     async fn wait_for_completion(
         &self,
         task_id: &str,

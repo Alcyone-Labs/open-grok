@@ -62,9 +62,10 @@ use super::session::fork::{
     dispatch_startup_fork_session,
 };
 use super::session::lifecycle::{
-    clear_startup_actions, dispatch_agent_type_mismatch_answered, dispatch_exit_session,
-    dispatch_new_session, dispatch_new_session_inner, dispatch_new_session_with_id,
-    dispatch_new_worktree_session, dispatch_trust_folder, open_new_session_question,
+    clear_startup_actions, dispatch_agent_type_mismatch_answered,
+    dispatch_delete_current_session_answered, dispatch_exit_session, dispatch_new_session,
+    dispatch_new_session_inner, dispatch_new_session_with_id, dispatch_new_worktree_session,
+    dispatch_trust_folder, open_delete_current_session_question, open_new_session_question,
 };
 use super::session::load::{
     dispatch_cycle_session_source_filter, dispatch_load_session, dispatch_pick_content_session,
@@ -76,21 +77,19 @@ use super::session::load::{
 use super::session::modal::dispatch_rename_session;
 use super::settings::setters::{
     clear_deepseek_api_key, clear_default_model, clear_fireworks_api_key,
-    clear_fork_secondary_model, clear_kimi_api_key, clear_memory_model,
-    clear_opencode_go_api_key, clear_perplexity_api_key, clear_recap_model,
-    preview_auto_dark_theme,
-    preview_auto_light_theme, preview_theme, set_antigravity_skip_permissions,
+    clear_fork_secondary_model, clear_kimi_api_key, clear_memory_model, clear_opencode_go_api_key,
+    clear_perplexity_api_key, clear_recap_model, preview_auto_dark_theme, preview_auto_light_theme,
+    preview_theme, refresh_opencode_go_models, set_antigravity_skip_permissions,
     set_antigravity_subagents, set_ask_user_question_timeout_enabled, set_auto_dark_theme,
     set_auto_light_theme, set_auto_update, set_code_mode, set_collapsed_edit_blocks,
     set_combine_queued_prompts, set_compact_mode, set_contextual_hint_image_input,
     set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
     set_contextual_hint_ssh_wrap, set_contextual_hint_undo, set_contextual_hint_word_select,
-    set_default_model, set_default_selected_permission, set_display_refresh_auto_cadence,
-    set_deepseek_api_key, set_fireworks_api_key, set_fork_secondary_model, set_group_tool_verbs,
-    set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_kimi_api_endpoint,
-    set_kimi_api_key,
-    refresh_opencode_go_models, set_local_feature_flag, set_max_thoughts_width, set_memory_model,
-    set_multiline_mode, set_opencode_go_api_key, set_opencode_go_enabled_models,
+    set_deepseek_api_key, set_default_model, set_default_selected_permission,
+    set_display_refresh_auto_cadence, set_fireworks_api_key, set_fork_secondary_model,
+    set_group_tool_verbs, set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection,
+    set_kimi_api_endpoint, set_kimi_api_key, set_local_feature_flag, set_max_thoughts_width,
+    set_memory_model, set_multiline_mode, set_opencode_go_api_key, set_opencode_go_enabled_models,
     set_page_flip_on_send, set_perplexity_api_key, set_perplexity_web_search,
     set_prompt_suggestions, set_recap_model, set_remember_tool_approvals, set_render_mermaid,
     set_respect_manual_folds, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
@@ -101,18 +100,16 @@ use super::settings::setters::{
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette,
     dispatch_open_deepseek_api_key_editor, dispatch_open_fireworks_api_key_editor,
-    dispatch_open_howto_guides,
-    dispatch_open_kimi_api_key_editor, dispatch_open_opencode_go_api_key_editor,
-    dispatch_open_reset_confirm, dispatch_open_settings,
+    dispatch_open_howto_guides, dispatch_open_kimi_api_key_editor,
+    dispatch_open_opencode_go_api_key_editor, dispatch_open_reset_confirm, dispatch_open_settings,
     dispatch_toggle_compact_mode, dispatch_toggle_mouse_capture, dispatch_toggle_multiline,
     dispatch_toggle_timestamps, dispatch_toggle_vim_mode,
 };
 use super::status::{
     dispatch_copy_session_id, dispatch_manage_billing, dispatch_open_gboom, dispatch_open_tutorial,
-    dispatch_privacy_banner_accept, dispatch_privacy_banner_customize, dispatch_share_session,
-    dispatch_show_context_info, dispatch_show_privacy_info, dispatch_show_queue,
-    dispatch_show_release_notes, dispatch_show_session_info, dispatch_show_tasks,
-    dispatch_show_usage, set_coding_data_sharing,
+    dispatch_privacy_banner_opt_in, dispatch_privacy_banner_opt_out, dispatch_share_session,
+    dispatch_show_context_info, dispatch_show_queue, dispatch_show_release_notes,
+    dispatch_show_session_info, dispatch_show_tasks, dispatch_show_usage, set_coding_data_sharing,
 };
 use super::task_result::{dispatch_task_result, unregister_all_active_sessions};
 use super::transcript::{
@@ -209,6 +206,10 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::NewSession => dispatch_new_session(app),
         Action::ChooseNewSessionMode => open_new_session_question(app),
         Action::ExitSession | Action::ExitSessionConfirmed => dispatch_exit_session(app),
+        Action::DeleteCurrentSession => open_delete_current_session_question(app),
+        Action::DeleteCurrentSessionAnswered { confirmed } => {
+            dispatch_delete_current_session_answered(app, confirmed)
+        }
         Action::NewWorktreeSession {
             load_session_id,
             label,
@@ -1015,7 +1016,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SaveRememberNoteFromModal => dispatch_save_remember_note_from_modal(app),
         Action::SendBtw(question) => dispatch_send_btw(app, question),
         Action::SendRecap { auto } => dispatch_send_recap(app, auto),
-        Action::ShowPrivacyInfo => dispatch_show_privacy_info(app),
         Action::SetCodingDataSharing { opted_in } => set_coding_data_sharing(app, opted_in),
         Action::ToggleYolo => dispatch_toggle_yolo(app),
         Action::ToggleMultiline => dispatch_toggle_multiline(app),
@@ -1102,8 +1102,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PreviewAutoLightTheme(v) => preview_auto_light_theme(app, v),
         Action::OpenSettings => dispatch_open_settings(app, None),
         Action::OpenSettingsFocus { key } => dispatch_open_settings(app, Some(key)),
-        Action::PrivacyBannerAccept => dispatch_privacy_banner_accept(app),
-        Action::PrivacyBannerCustomize => dispatch_privacy_banner_customize(app),
+        Action::PrivacyBannerOptIn => dispatch_privacy_banner_opt_in(app),
+        Action::PrivacyBannerOptOut => dispatch_privacy_banner_opt_out(app),
         Action::OpenCommandPalette => dispatch_open_command_palette(app),
         Action::OpenHowtoGuides => dispatch_open_howto_guides(app),
         Action::OpenResetConfirm { key } => dispatch_open_reset_confirm(app, key),
@@ -1221,6 +1221,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 source,
                 session_id,
                 cwd,
+                after: crate::app::actions::AfterSessionDelete::Stay,
             }]
         }
         Action::Fork(args) => dispatch_fork(app, args),

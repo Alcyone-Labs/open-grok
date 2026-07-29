@@ -183,6 +183,7 @@ fn session_created_sets_session_id() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -234,6 +235,7 @@ fn session_created_reanchors_provider_before_provider_specific_effects() {
             agent_id: id,
             session_id: "codex-session".into(),
             models: Some(provider_session_models("gpt-5.6-sol", "codex")),
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -259,6 +261,7 @@ fn session_created_omits_cta_catalog_when_disabled() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -303,6 +306,7 @@ fn session_created_banner_advertises_resume_in_minimal_mode() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -384,6 +388,7 @@ fn worktree_session_created_sets_session_and_cwd() {
             worktree_path: worktree_path.clone(),
             session_cwd: session_cwd.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -442,6 +447,7 @@ fn worktree_session_preserves_subdirectory_offset() {
             worktree_path: worktree_root.clone(),
             session_cwd: session_cwd.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -570,6 +576,7 @@ fn worktree_session_created_drains_queued_prompts() {
             worktree_path,
             session_cwd: PathBuf::from("/tmp/grok-worktrees/pager-abc"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -603,6 +610,7 @@ fn session_created_drains_queued_prompts() {
             agent_id: id,
             session_id: acp::SessionId::new("sess-drain-1"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -639,6 +647,7 @@ fn session_created_with_flag_emits_five_fetches_and_clears_flag() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -661,6 +670,7 @@ fn session_created_without_flag_emits_no_extension_fetches() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -926,6 +936,7 @@ fn startup_provider_model_override_is_sent_once_and_cleared_on_success() {
             agent_id: AgentId(0),
             session_id: acp::SessionId::new("codex-session"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1093,6 +1104,7 @@ fn deferred_model_switch_applied_on_session_created() {
             agent_id: id,
             session_id: session_id.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1133,6 +1145,7 @@ fn deferred_model_switch_applied_on_worktree_session_created() {
             worktree_path: PathBuf::from("/tmp/worktree"),
             session_cwd: PathBuf::from("/tmp/worktree"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1823,6 +1836,8 @@ fn translate_local_submit_never_returns_persist_never_for_new_session() {
 }
 #[test]
 fn delete_session_action_emits_delete_effect() {
+    use crate::app::actions::AfterSessionDelete;
+
     let mut app = test_app_with_agent();
     open_session_picker_with(&mut app, vec![make_picker_entry("s1", "/repo")]);
     let effects = dispatch(
@@ -1840,10 +1855,104 @@ fn delete_session_action_emits_delete_effect() {
                 source,
                 session_id,
                 cwd,
+                after: AfterSessionDelete::Stay,
             }] if source == "local" && session_id == "s1" && cwd == "/repo"
         ),
         "DeleteSession action must emit exactly one matching DeleteSession effect"
     );
+}
+#[test]
+fn delete_current_session_confirm_emits_effect() {
+    use crate::app::actions::AfterSessionDelete;
+    let mut app = test_app_with_agent();
+    {
+        let a = app.agents.get_mut(&AgentId(0)).unwrap();
+        a.session.session_id = Some(acp::SessionId::new("sess-current"));
+        a.session.cwd = std::path::PathBuf::from("/repo");
+    }
+    assert!(dispatch(Action::DeleteCurrentSession, &mut app).is_empty());
+    assert!(matches!(
+        app.agents[&AgentId(0)]
+            .question_view
+            .as_ref()
+            .unwrap()
+            .local_kind,
+        Some(crate::views::question_view::LocalQuestionKind::DeleteCurrentSession)
+    ));
+    assert!(
+        dispatch(
+            Action::DeleteCurrentSessionAnswered { confirmed: false },
+            &mut app,
+        )
+        .is_empty()
+    );
+    let effects = dispatch(
+        Action::DeleteCurrentSessionAnswered { confirmed: true },
+        &mut app,
+    );
+    assert!(
+        matches!(
+            effects.first(),
+            Some(Effect::CancelTurn {
+                cancel_subagents: true,
+                ..
+            })
+        ),
+        "must cancel the turn/subagents before delete, got {effects:?}"
+    );
+    assert!(
+        matches!(
+            effects.last(),
+            Some(Effect::DeleteSession {
+                session_id,
+                after: AfterSessionDelete::Welcome,
+                ..
+            }) if session_id == "sess-current"
+        ),
+        "got {effects:?}"
+    );
+}
+#[test]
+fn delete_current_session_complete_welcome_and_guard() {
+    use crate::app::actions::{AfterSessionDelete, TaskResult};
+    let mut app = test_app_with_agent();
+    app.agents.get_mut(&AgentId(0)).unwrap().session.session_id =
+        Some(acp::SessionId::new("sess-a"));
+    let effects = dispatch_task_result(
+        TaskResult::DeleteSessionComplete {
+            source: "current".into(),
+            session_id: "sess-a".into(),
+            after: AfterSessionDelete::Welcome,
+        },
+        &mut app,
+    );
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    assert!(app.agents.is_empty());
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::UnregisterActiveSession { .. }))
+    );
+    let mut app = test_app_with_agent();
+    app.agents.get_mut(&AgentId(0)).unwrap().session.session_id =
+        Some(acp::SessionId::new("sess-a"));
+    let other = AgentId(1);
+    let session = make_test_agent_session(&app, other, "unused");
+    app.agents
+        .insert(other, AgentView::new(session, ScrollbackState::new()));
+    app.agents.get_mut(&other).unwrap().session.session_id = Some(acp::SessionId::new("sess-b"));
+    app.active_view = ActiveView::Agent(other);
+    let effects = dispatch_task_result(
+        TaskResult::DeleteSessionComplete {
+            source: "current".into(),
+            session_id: "sess-a".into(),
+            after: AfterSessionDelete::Welcome,
+        },
+        &mut app,
+    );
+    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == other));
+    assert!(!app.agents.contains_key(&AgentId(0)));
+    assert!(!effects.iter().any(|e| matches!(e, Effect::Quit)));
 }
 #[test]
 fn entry_title_falls_back_to_short_session_id_when_no_prompt() {

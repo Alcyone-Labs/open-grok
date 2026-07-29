@@ -901,7 +901,7 @@ pub(super) async fn run_session(
                                     // Cap to prevent unbounded growth during long tool calls.
                                     const MAX_BUFFER_EVENTS: usize = 50;
                                     buffer.push_capped(
-                                        xai_grok_tools::implementations::grok_build::task::types::MonitorEventNotification {
+                                        xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventNotification {
                                             task_id: task_id.clone(),
                                             event_text,
                                             // Tag with this session's id so the
@@ -1314,7 +1314,7 @@ pub(super) async fn run_session(
                             // Re-seed the session-scoped MCP output cap
                             // (repo `[mcp] max_output_bytes`) BEFORE the
                             // unchanged-diff early-exit below: this command
-                            // also fires for `<cwd>/.grok/config.toml` edits,
+                            // also fires for `<cwd>/.opengrok/config.toml` edits,
                             // and a cap-only edit changes no server configs.
                             session.reseed_mcp_output_cap().await;
 
@@ -1468,11 +1468,16 @@ pub(super) async fn run_session(
 
                             let session_for_mcp = session.clone();
                             let sname = server_name.clone();
+                            let session_cwd = session.session_info.cwd.clone();
                             tokio::task::spawn_local(async move {
                                 session_for_mcp.ensure_mcp_tools_initialized().await;
-                                if let Err(e) = crate::util::config::save_mcp_server_enabled(
-                                    &sname, enabled,
-                                ).await {
+                                if let Err(e) = crate::util::config::save_mcp_server_enabled_in(
+                                    &sname,
+                                    enabled,
+                                    std::path::Path::new(&session_cwd),
+                                )
+                                .await
+                                {
                                     tracing::warn!(
                                         server = sname.as_str(),
                                         error = %e,

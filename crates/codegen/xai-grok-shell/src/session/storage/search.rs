@@ -23,7 +23,8 @@ use std::time::Duration;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::time::Instant;
 
-use super::search_fts::{SessionDoc, SessionSearchIndex, SessionSearchRow};
+use super::search_fts::{self, SessionDoc, SessionSearchIndex, SessionSearchRow};
+use super::search_recovery;
 use super::search_remote_sync;
 use super::{
     ContentPeek, PromptExtractEvent, RawLinePeek, RawParamsPeek, StorageAdapter,
@@ -64,6 +65,60 @@ impl Default for BootstrapConfig {
             per_session_timeout: Duration::from_secs(30),
             max_file_size: 30 * 1024 * 1024, // 30 MB
         }
+    }
+}
+
+/// Rate-limits a repetitive log site: the first `cap` events go to `warn`, the
+/// rest to `debug`. Resets its budget whenever the search cache is healed, so a
+/// fresh cache starts logging loudly again instead of staying silent forever.
+struct HealAwareLogCounter {
+    count: AtomicU64,
+    epoch_seen: AtomicU64,
+    cap: u64,
+}
+
+impl HealAwareLogCounter {
+    const fn new(cap: u64) -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            epoch_seen: AtomicU64::new(0),
+            cap,
+        }
+    }
+
+    fn should_warn(&self, kind: &str) -> bool {
+        let epoch = search_recovery::current_epoch();
+        if self.epoch_seen.swap(epoch, Ordering::Relaxed) != epoch {
+            self.count.store(0, Ordering::Relaxed);
+        }
+        let n = self.count.fetch_add(1, Ordering::Relaxed);
+        if n < self.cap {
+            return true;
+        }
+        if n == self.cap {
+            tracing::warn!(cap = self.cap, "further {kind} will be logged at debug");
+        }
+        false
+    }
+}
+
+static INDEX_FAIL_LOG: HealAwareLogCounter = HealAwareLogCounter::new(8);
+static BOOTSTRAP_TIMEOUT_LOG: HealAwareLogCounter = HealAwareLogCounter::new(8);
+
+fn log_session_index_failure(session_id: &str, error: &io::Error, message: &str) {
+    if INDEX_FAIL_LOG.should_warn("index failures") {
+        tracing::warn!(error = %error, session_id = %session_id, "{message}");
+    } else {
+        tracing::debug!(error = %error, session_id = %session_id, "{message}");
+    }
+}
+
+fn log_bootstrap_timeout(session_id: &str, timeout_secs: u64) {
+    let msg = "session indexing timed out during bootstrap";
+    if BOOTSTRAP_TIMEOUT_LOG.should_warn("bootstrap timeouts") {
+        tracing::warn!(session_id = %session_id, timeout_secs, "{msg}");
+    } else {
+        tracing::debug!(session_id = %session_id, timeout_secs, "{msg}");
     }
 }
 
@@ -135,7 +190,8 @@ struct SearchManagerState {
 ///
 /// TODO: When multiple grok processes run concurrently, they each have
 /// their own `SearchIndexManager` writing to the same SQLite database.
-/// WAL mode prevents corruption, but redundant work is done. Consider
+/// WAL mode reduces corruption risk and [`search_fts`] self-heals an
+/// unusable file, but redundant work is still done. Consider
 /// adding reindex claim coordination (like the memory system's
 /// `try_claim_reindex()` / `release_claim()` pattern) if this becomes
 /// a problem.
@@ -284,6 +340,15 @@ fn sqlite_to_io_error(error: rusqlite::Error) -> io::Error {
     io::Error::other(format!("sqlite error: {error}"))
 }
 
+/// Open the index (self-heals unusable files) and run `op`, mapping errors
+/// to `io::Error` the way the rest of this module expects.
+fn with_search_index<R>(
+    db_path: &Path,
+    op: impl Fn(&SessionSearchIndex) -> Result<R, rusqlite::Error>,
+) -> io::Result<R> {
+    search_fts::with_index(db_path, op).map_err(sqlite_to_io_error)
+}
+
 /// Execute a session search query.
 ///
 /// On first call, triggers a background bootstrap that indexes all
@@ -306,6 +371,7 @@ pub async fn execute_search(
 
     SEARCH_INDEX_MANAGER.bootstrap_once(root_dir.to_path_buf());
 
+    let epoch = search_recovery::CacheEpoch::now();
     let deadline = tokio::time::Instant::now() + BOOTSTRAP_WAIT_TIMEOUT;
     while SEARCH_INDEX_MANAGER
         .progress
@@ -325,22 +391,27 @@ pub async fn execute_search(
     let query_owned = query.to_string();
 
     let qr = tokio::task::spawn_blocking(move || {
-        let index = SessionSearchIndex::open_or_create(&db_path).map_err(sqlite_to_io_error)?;
-        index
-            .query(&query_owned, cwd.as_deref(), limit, offset, include_content)
-            .map_err(sqlite_to_io_error)
+        with_search_index(&db_path, |index| {
+            index.query(&query_owned, cwd.as_deref(), limit, offset, include_content)
+        })
     })
     .await
     .map_err(io::Error::other)??;
+
+    let healed = epoch.changed();
+    if healed {
+        SEARCH_INDEX_MANAGER.bootstrap_once(root_dir.to_path_buf());
+    }
 
     Ok(SessionSearchResponse {
         results: qr.results,
         next_offset: qr.next_offset,
         total_estimate: qr.total_estimate,
-        bootstrapping: SEARCH_INDEX_MANAGER
-            .progress
-            .bootstrapping
-            .load(Ordering::Relaxed),
+        bootstrapping: healed
+            || SEARCH_INDEX_MANAGER
+                .progress
+                .bootstrapping
+                .load(Ordering::Relaxed),
     })
 }
 
@@ -466,10 +537,10 @@ async fn flush_ready(
     for key in ready {
         pending.remove(&key);
         if let Err(e) = upsert_by_key(root_dir, storage, &key).await {
-            tracing::warn!(
-                error = %e,
-                session_id = %key.session_id,
-                "failed upserting session in search index"
+            log_session_index_failure(
+                &key.session_id,
+                &e,
+                "failed upserting session in search index",
             );
         }
     }
@@ -526,21 +597,20 @@ async fn upsert_session(
         // Storage backend doesn't expose file paths — no content to index
         return Ok(UpsertOutcome::NoContent);
     };
-    let doc = build_session_doc(summary, content, bytes_read);
+    let doc = build_session_doc(summary, content);
     let db_path = search_db_path(root_dir);
 
     tokio::task::spawn_blocking(move || {
-        let index = SessionSearchIndex::open_or_create(&db_path).map_err(sqlite_to_io_error)?;
+        with_search_index(&db_path, |index| {
+            if let Ok(Some(existing_hash)) = index.get_content_hash(&doc.session_id)
+                && existing_hash == doc.content_hash
+            {
+                return Ok(UpsertOutcome::Unchanged { bytes_read });
+            }
 
-        // Skip if content hasn't changed
-        if let Ok(Some(existing_hash)) = index.get_content_hash(&doc.session_id)
-            && existing_hash == doc.content_hash
-        {
-            return Ok(UpsertOutcome::Unchanged { bytes_read });
-        }
-
-        index.upsert_doc(&doc).map_err(sqlite_to_io_error)?;
-        Ok(UpsertOutcome::Indexed { bytes_read })
+            index.upsert_doc(&doc)?;
+            Ok(UpsertOutcome::Indexed { bytes_read })
+        })
     })
     .await
     .map_err(io::Error::other)?
@@ -550,8 +620,7 @@ async fn delete_session(root_dir: &Path, session_id: &str) -> io::Result<()> {
     let db_path = search_db_path(root_dir);
     let session_id = session_id.to_string();
     tokio::task::spawn_blocking(move || {
-        let index = SessionSearchIndex::open_or_create(&db_path).map_err(sqlite_to_io_error)?;
-        index.delete_doc(&session_id).map_err(sqlite_to_io_error)
+        with_search_index(&db_path, |index| index.delete_doc(&session_id))
     })
     .await
     .map_err(io::Error::other)?
@@ -559,6 +628,7 @@ async fn delete_session(root_dir: &Path, session_id: &str) -> io::Result<()> {
 
 async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Result<()> {
     let config = BootstrapConfig::default();
+    let epoch = search_recovery::CacheEpoch::now();
     let progress = &SEARCH_INDEX_MANAGER.progress;
 
     // Reset progress counters (bootstrapping flag already set by bootstrap_once)
@@ -633,7 +703,7 @@ async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Resul
                 && should_skip_session(path, max_file_size)
             {
                 let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                tracing::warn!(
+                tracing::debug!(
                     session_id = %session_id,
                     file_size = file_size,
                     max_size = max_file_size,
@@ -641,19 +711,17 @@ async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Resul
                 );
                 // Insert a title-only placeholder so title search still works;
                 // insert-if-absent so an existing (fuller) row is never touched.
-                let doc = build_session_doc(&summary, String::new(), 0);
+                let doc = build_session_doc(&summary, String::new());
                 let db_path = search_db_path(&root);
                 let title_only = tokio::task::spawn_blocking(move || {
-                    SessionSearchIndex::open_or_create(&db_path)
-                        .and_then(|index| index.insert_doc_if_absent(&doc))
-                        .map_err(sqlite_to_io_error)
+                    with_search_index(&db_path, |index| index.insert_doc_if_absent(&doc))
                 })
                 .await;
                 if let Err(e) = title_only.map_err(io::Error::other).and_then(|r| r) {
-                    tracing::warn!(
-                        error = %e,
-                        session_id = %session_id,
-                        "failed to write title-only index row for large session"
+                    log_session_index_failure(
+                        &session_id,
+                        &e,
+                        "failed to write title-only index row for large session",
                     );
                 }
                 progress.skipped.fetch_add(1, Ordering::Relaxed);
@@ -680,21 +748,21 @@ async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Resul
                     return Ok(UpsertOutcome::NoContent);
                 };
 
-                let doc = build_session_doc(&summary, content, bytes_read);
+                let doc = build_session_doc(&summary, content);
                 let db_path = search_db_path(&root);
 
                 // Each task opens its own SessionSearchIndex connection.
                 // SQLite WAL mode handles concurrent readers + serialized writers.
                 match tokio::task::spawn_blocking(move || {
-                    let index =
-                        SessionSearchIndex::open_or_create(&db_path).map_err(sqlite_to_io_error)?;
-                    if let Ok(Some(existing_hash)) = index.get_content_hash(&doc.session_id)
-                        && existing_hash == doc.content_hash
-                    {
-                        return Ok(UpsertOutcome::Unchanged { bytes_read });
-                    }
-                    index.upsert_doc(&doc).map_err(sqlite_to_io_error)?;
-                    Ok(UpsertOutcome::Indexed { bytes_read })
+                    with_search_index(&db_path, |index| {
+                        if let Ok(Some(existing_hash)) = index.get_content_hash(&doc.session_id)
+                            && existing_hash == doc.content_hash
+                        {
+                            return Ok(UpsertOutcome::Unchanged { bytes_read });
+                        }
+                        index.upsert_doc(&doc)?;
+                        Ok(UpsertOutcome::Indexed { bytes_read })
+                    })
                 })
                 .await
                 {
@@ -715,10 +783,10 @@ async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Resul
                     UpsertOutcome::NoContent => {}
                 },
                 Ok(Err(e)) => {
-                    tracing::warn!(
-                        error = %e,
-                        session_id = %session_id,
-                        "failed to index session for search"
+                    log_session_index_failure(
+                        &session_id,
+                        &e,
+                        "failed to index session for search",
                     );
                     progress.skipped.fetch_add(1, Ordering::Relaxed);
                     return;
@@ -726,11 +794,7 @@ async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Resul
                 Err(_) => {
                     // Timeout expired — the spawn_blocking task continues to
                     // completion but the pipeline moves on to the next session.
-                    tracing::warn!(
-                        session_id = %session_id,
-                        timeout_secs = timeout_dur.as_secs(),
-                        "session indexing timed out during bootstrap"
-                    );
+                    log_bootstrap_timeout(&session_id, timeout_dur.as_secs());
                     progress.skipped.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
@@ -749,17 +813,16 @@ async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Resul
     // Prune orphaned entries
     let db_path = search_db_path(root_dir);
     tokio::task::spawn_blocking(move || -> io::Result<()> {
-        let index = SessionSearchIndex::open_or_create(&db_path).map_err(sqlite_to_io_error)?;
-        let indexed_ids = index
-            .all_indexed_session_ids()
-            .map_err(sqlite_to_io_error)?;
+        with_search_index(&db_path, |index| {
+            let indexed_ids = index.all_indexed_session_ids()?;
 
-        for id in indexed_ids {
-            if !expected_ids.contains(&id) {
-                let _ = index.delete_doc(&id);
+            for id in indexed_ids {
+                if !expected_ids.contains(&id) {
+                    let _ = index.delete_doc(&id);
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     })
     .await
     .map_err(io::Error::other)??;
@@ -779,8 +842,21 @@ async fn reindex_all(root_dir: &Path, storage: &dyn StorageAdapter) -> io::Resul
     // Record bootstrap completion timestamp in the meta table.
     // Used by remote sync to determine local index staleness.
     let db_path_meta = search_db_path(root_dir);
-    if let Err(e) = search_remote_sync::write_last_bootstrap_at(&db_path_meta) {
+    let mut needs_rebootstrap = epoch.changed();
+    if needs_rebootstrap {
+        tracing::warn!("session search cache healed during bootstrap; completion marker withheld");
+    } else if let Err(e) = search_remote_sync::write_last_bootstrap_at(&db_path_meta) {
         tracing::warn!(error = %e, "failed to write last_bootstrap_at metadata");
+    } else if epoch.changed() {
+        tracing::warn!("session search cache healed while writing completion marker; clearing it");
+        if let Err(e) = search_remote_sync::clear_last_bootstrap_at(&db_path_meta) {
+            tracing::warn!(error = %e, "failed to clear stale completion marker after heal");
+        }
+        needs_rebootstrap = true;
+    }
+
+    if needs_rebootstrap {
+        SEARCH_INDEX_MANAGER.bootstrap_once(root_dir.to_path_buf());
     }
 
     Ok(())
@@ -1273,7 +1349,7 @@ fn collect_delta_content(updates_path: &Path, offset: u64) -> io::Result<DeltaRe
     Ok(DeltaResult::Content { text, file_size })
 }
 
-fn build_session_doc(summary: &Summary, content: String, last_indexed_offset: u64) -> SessionDoc {
+fn build_session_doc(summary: &Summary, content: String) -> SessionDoc {
     let title = summary.display_title().to_owned();
 
     let mut hasher = blake3::Hasher::new();
@@ -1289,7 +1365,6 @@ fn build_session_doc(summary: &Summary, content: String, last_indexed_offset: u6
         title,
         content,
         content_hash,
-        last_indexed_offset,
     }
 }
 
@@ -1375,14 +1450,14 @@ mod tests {
     fn test_build_session_doc_hashes_content() {
         let summary = test_summary("test-session", "/workspace", "My session title");
 
-        let doc = build_session_doc(&summary, "prompt text".to_string(), 0);
+        let doc = build_session_doc(&summary, "prompt text".to_string());
         assert_eq!(doc.session_id, "test-session");
         assert_eq!(doc.title, "My session title");
         assert_eq!(doc.content, "prompt text");
         assert!(!doc.content_hash.is_empty());
 
         // Same content + same title → same hash
-        let doc2 = build_session_doc(&summary, "prompt text".to_string(), 0);
+        let doc2 = build_session_doc(&summary, "prompt text".to_string());
         assert_eq!(doc.content_hash, doc2.content_hash);
     }
 
@@ -1691,8 +1766,8 @@ mod tests {
         let new = test_summary("s1", "/workspace", "New title");
         let content = "same prompt text".to_string();
 
-        let doc_old = build_session_doc(&old, content.clone(), 0);
-        let doc_new = build_session_doc(&new, content, 0);
+        let doc_old = build_session_doc(&old, content.clone());
+        let doc_new = build_session_doc(&new, content);
 
         assert_ne!(
             doc_old.content_hash, doc_new.content_hash,
@@ -1704,11 +1779,11 @@ mod tests {
     fn test_build_session_doc_prefers_generated_title() {
         let mut summary = test_summary("s1", "/workspace", "session summary");
         summary.generated_title = Some("Generated Title".to_string());
-        let doc = build_session_doc(&summary, "content".to_string(), 0);
+        let doc = build_session_doc(&summary, "content".to_string());
         assert_eq!(doc.title, "Generated Title");
 
         summary.generated_title = Some(String::new());
-        let doc2 = build_session_doc(&summary, "content".to_string(), 0);
+        let doc2 = build_session_doc(&summary, "content".to_string());
         assert_eq!(doc2.title, "session summary");
     }
 
@@ -2060,7 +2135,7 @@ mod tests {
         let db_path = search_db_path(tmp.path());
 
         let summary = test_summary("stub", "/ws", "");
-        let stub = build_session_doc(&summary, String::new(), 0);
+        let stub = build_session_doc(&summary, String::new());
         {
             let index = SessionSearchIndex::open_or_create(&db_path).unwrap();
             index.upsert_doc(&stub).unwrap();

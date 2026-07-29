@@ -87,6 +87,7 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 xai-file-utils = { path = "../xai-file-utils" }
+dhat = { version = "0.3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 command-fds = { version = "0.3", features = ["tokio"] }
@@ -103,9 +104,11 @@ windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 dirs = { workspace = true }
+pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 wiremock = { workspace = true }
+xai-grok-test-support = { workspace = true }
 xai-test-utils = { workspace = true }
 
 [build-dependencies]
@@ -122,3 +125,4 @@ default-bazel = [
     ]
 default = ["serde"]
 serde = []
+dhat-heap = ["dep:dhat"]

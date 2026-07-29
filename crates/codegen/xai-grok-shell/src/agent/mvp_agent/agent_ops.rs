@@ -690,7 +690,7 @@ impl MvpAgent {
     /// Most recently allocated turn number for `sid`, or `None` if the
     /// session has not started a turn yet.
     pub(crate) fn session_turn_number(&self, sid: &acp::SessionId) -> Option<u64> {
-        self.session_turn_numbers.borrow().get(sid).copied()
+        self.retained_resources.borrow().get(sid).and_then(|d| d.turn_number)
     }
     /// Return the current GrokAuth credentials, if authenticated and not expired.
     pub(crate) fn current_auth(&self) -> Option<crate::auth::GrokAuth> {
@@ -1884,7 +1884,7 @@ impl MvpAgent {
             sessions: RefCell::new(HashMap::new()),
             activity,
             loading_sessions: RefCell::new(HashMap::new()),
-            dispatch_locks: RefCell::new(HashMap::new()),
+            retained_resources: RefCell::new(HashMap::new()),
             session_threads: RefCell::new(HashMap::new()),
             resident_roster_titles: RefCell::new(HashMap::new()),
             initialize_request: OnceLock::new(),
@@ -1932,12 +1932,10 @@ impl MvpAgent {
             relay_sync_enabled,
             buffering_settings: RefCell::new(None),
             background_copy_context: BackgroundCopyContext::new(),
-            session_turn_numbers: RefCell::new(HashMap::new()),
-            permission_event_receivers: RefCell::new(HashMap::new()),
             codebase_indexes: Arc::new(
                 parking_lot::Mutex::new(CodebaseIndexManager::new()),
             ),
-            session_index_claims: RefCell::new(HashMap::new()),
+            resident_resources: RefCell::new(HashMap::new()),
             worktree_type,
             restore_code,
             session_registry_local,
@@ -1954,15 +1952,12 @@ impl MvpAgent {
                 crate::agent::subagent::SubagentPresentation::new(),
             ),
             subagent_provider_registry: Default::default(),
-            monitor_event_buffer: xai_grok_tools::implementations::grok_build::task::types::MonitorEventBuffer::default(),
+            monitor_event_buffer: xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer::default(),
             bundle_sync_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             post_unblock_jwt_retry_in_flight: Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
             workspace_ops: RefCell::new(None),
-            require_gateway_sessions: Rc::new(
-                RefCell::new(std::collections::HashSet::new()),
-            ),
             session_live_state: RefCell::new(HashMap::new()),
             supervisor_started: std::cell::Cell::new(false),
             settings_reapply_in_flight: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -2066,9 +2061,8 @@ impl MvpAgent {
                 continue;
             }
             self.request_session_shutdown(&id);
-            if self.sessions.borrow_mut().remove(&id).is_some() {
-                self.session_index_claims.borrow_mut().remove(&id);
-                self.require_gateway_sessions.borrow_mut().remove(&id);
+            if self.take_session(&id).is_some() {
+                self.resident_resources.borrow_mut().remove(&id);
                 self.set_session_live_state(&id, SessionLiveState::Dormant);
                 unloaded += 1;
                 tracing::debug!(session_id = %id.0, "idle session unloaded to disk on disconnect");
@@ -2770,17 +2764,18 @@ impl MvpAgent {
             current_effort,
         )
     }
-    /// Build the `x.ai/sessionConfig` and `x.ai/sessionDetail` `_meta` values
-    /// shared by `new_session` and `load_session`, returned as
-    /// `(sessionConfig, sessionDetail)`. Keeping both response paths on this one
+    /// Insert the per-session `_meta` keys (`x.ai/sessionConfig`,
+    /// `x.ai/sessionDetail`, `x.ai/schedulerBackgroundLoops`) shared by
+    /// `new_session` and `load_session`. Keeping both response paths on this one
     /// builder stops them drifting.
-    pub(super) fn session_config_meta(
+    pub(super) fn insert_session_config_meta(
         &self,
+        meta: &mut serde_json::Map<String, serde_json::Value>,
         session_id: &acp::SessionId,
         cwd: String,
         title: Option<String>,
         model_state: &acp::SessionModelState,
-    ) -> (serde_json::Value, serde_json::Value) {
+    ) {
         let config_options = self.session_config_options(Some(session_id), model_state);
         let detail = session_config::GrokSessionDetail::build(
             session_id.0.to_string(),
@@ -2788,7 +2783,22 @@ impl MvpAgent {
             model_state.current_model_id.0.to_string(),
             title,
         );
-        (serde_json::json!({ "options": config_options }), serde_json::json!(detail))
+        meta.insert(
+            "x.ai/sessionConfig".to_string(),
+            serde_json::json!({ "options": config_options }),
+        );
+        meta.insert("x.ai/sessionDetail".to_string(), serde_json::json!(detail));
+        if let Some(background_loops) = self
+            .sessions
+            .borrow()
+            .get(session_id)
+            .map(|handle| handle.scheduler_background_loops)
+        {
+            meta.insert(
+                crate::session::SCHEDULER_BACKGROUND_LOOPS_META_KEY.to_string(),
+                serde_json::json!(background_loops),
+            );
+        }
     }
     /// Seed the global sampling config with login auth when available.
     ///
@@ -2878,13 +2888,16 @@ impl MvpAgent {
     }
     /// Read a session's next trace turn number without advancing the counter.
     fn peek_turn_number(&self, session_id: &acp::SessionId) -> u64 {
-        self.session_turn_numbers.borrow().get(session_id).copied().unwrap_or(0u64)
+        self.session_turn_number(session_id).unwrap_or(0u64)
     }
-    /// Set a session's next trace turn number. The sole writer of the
-    /// `session_turn_numbers` counter, shared by `allocate_turn_number` and the
-    /// batched harness-sibling allocation so both honor the same storage.
-    fn set_turn_number(&self, session_id: &acp::SessionId, next: u64) {
-        self.session_turn_numbers.borrow_mut().insert(session_id.clone(), next);
+    /// Set a session's next trace turn number.
+    pub(super) fn set_turn_number(&self, session_id: &acp::SessionId, next: u64) {
+        self
+            .retained_resources
+            .borrow_mut()
+            .entry(session_id.clone())
+            .or_default()
+            .turn_number = Some(next);
     }
     /// Upload each drained harness trace turn (the goal planner at setup, and
     /// each verifier skeptic panel) as its OWN sibling `turn_{N}` artifact.
@@ -3847,6 +3860,7 @@ impl MvpAgent {
         let goal_enabled = self.cfg.borrow().resolve_goal().value;
         let background_workflows_enabled = self.cfg.borrow().resolve_workflows().value;
         let subagents_enabled = self.cfg.borrow().subagents_enabled;
+        let subagents_max_depth = self.cfg.borrow().subagents_max_depth;
         let tool_mode_preference = self.cfg.borrow().ui.code_mode;
         let ask_user_question_enabled = crate::upload::turn::parse_ask_user_question_from_meta(
                 session_meta,
@@ -4080,6 +4094,7 @@ impl MvpAgent {
                     goal_enabled,
                     background_workflows_enabled,
                     subagents_enabled,
+                    subagents_max_depth,
                     ask_user_question_enabled,
                     client_hooks,
                     prompt_display_cwd,
@@ -4196,9 +4211,12 @@ impl MvpAgent {
                 }
             });
         }
-        self.permission_event_receivers
+        self
+            .retained_resources
             .borrow_mut()
-            .insert(session_info.id.clone(), permission_events_rx);
+            .entry(session_info.id.clone())
+            .or_default()
+            .permission_event_receiver = Some(permission_events_rx);
         if handle_display_cwd.is_some() {
             handle.display_cwd = handle_display_cwd;
         }
@@ -4210,7 +4228,14 @@ impl MvpAgent {
             });
         self.notify_session_cwd_for_watch(std::path::Path::new(&session_info.cwd));
         self.activity.register_session(&session_info.id.0, &handle);
-        self.sessions.borrow_mut().insert(session_info.id.clone(), handle);
+        if let Some(old) = self
+            .sessions
+            .borrow_mut()
+            .insert(session_info.id.clone(), handle)
+            && let Some(scope) = &old.tool_context.process_scope
+        {
+            scope.kill_all();
+        }
         self.spawn_managed_gateway_tool_catalog_fetch();
         let cwd_for_maintenance = session_info.cwd.clone();
         tokio::spawn(async move {
@@ -4226,10 +4251,10 @@ impl MvpAgent {
         session_id: &acp::SessionId,
     ) -> Vec<PermissionEvent> {
         let mut events = Vec::new();
-        if let Some(rx) = self
-            .permission_event_receivers
-            .borrow_mut()
+        let mut retained = self.retained_resources.borrow_mut();
+        if let Some(rx) = retained
             .get_mut(session_id)
+            .and_then(|d| d.permission_event_receiver.as_mut())
         {
             while let Ok(event) = rx.try_recv() {
                 events.push(event);

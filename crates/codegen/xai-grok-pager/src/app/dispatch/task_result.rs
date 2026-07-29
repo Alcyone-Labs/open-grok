@@ -42,6 +42,7 @@ use super::session::load::{
     handle_session_load_failed, handle_session_loaded, handle_session_restore_failed,
     handle_session_restored, handle_session_search_debounce_expired, remove_session_from_pickers,
 };
+use super::session::modal::remove_agent_and_cleanup;
 use super::settings::ui::{apply_setting_rollback, refresh_open_settings_modals};
 use super::status::{
     commit_session_usage_block, handle_coding_data_sharing_failed,
@@ -1669,13 +1670,20 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             agent_id,
             session_id,
             models: new_models,
+            scheduler_background_loops,
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_deepseek_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_opencode_go_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_perplexity_session(app, agent_id, new_models.as_ref());
-            let effects = handle_session_created(app, agent_id, session_id, new_models);
+            let effects = handle_session_created(
+                app,
+                agent_id,
+                session_id,
+                new_models,
+                scheduler_background_loops,
+            );
             let effects = after_kimi_session_ready(app, agent_id, effects);
             let effects = after_fireworks_session_ready(app, agent_id, effects);
             let effects = after_deepseek_session_ready(app, agent_id, effects);
@@ -1690,6 +1698,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             worktree_path,
             session_cwd,
             models: new_models,
+            scheduler_background_loops,
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
@@ -1703,6 +1712,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 worktree_path,
                 session_cwd,
                 new_models,
+                scheduler_background_loops,
             );
             let effects = after_kimi_session_ready(app, agent_id, effects);
             let effects = after_fireworks_session_ready(app, agent_id, effects);
@@ -1783,6 +1793,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             restore_summary,
             restore_degree,
             running_prompt_id,
+            scheduler_background_loops,
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
@@ -1798,6 +1809,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 restore_summary,
                 restore_degree,
                 running_prompt_id,
+                scheduler_background_loops,
             );
             let effects = after_kimi_session_ready(app, agent_id, effects);
             let effects = after_fireworks_session_ready(app, agent_id, effects);
@@ -2259,7 +2271,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                         "✓ DeepSeek API key saved; models refreshed".to_owned()
                     }
                 } else if credential_status == crate::settings::SecretStatus::EnvironmentOverride {
-                    "✓ UI-stored DeepSeek API key cleared; environment key remains active".to_owned()
+                    "✓ UI-stored DeepSeek API key cleared; environment key remains active"
+                        .to_owned()
                 } else {
                     "✓ UI-stored DeepSeek API key cleared".to_owned()
                 };
@@ -2764,14 +2777,17 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::CodingDataSharingUpdated { agent_id, opted_in } => {
-            handle_coding_data_sharing_updated(app, agent_id, opted_in)
-        }
+        TaskResult::CodingDataSharingUpdated {
+            agent_id,
+            opted_in,
+            seq,
+        } => handle_coding_data_sharing_updated(app, agent_id, opted_in, seq),
         TaskResult::CodingDataSharingFailed {
             agent_id,
             error,
             rollback_to_opted_in,
-        } => handle_coding_data_sharing_failed(app, agent_id, error, rollback_to_opted_in),
+            seq,
+        } => handle_coding_data_sharing_failed(app, agent_id, error, rollback_to_opted_in, seq),
         TaskResult::RenameSessionComplete { agent_id, title } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 let safe = crate::views::session_title::sanitize_display_text(&title);
@@ -2793,10 +2809,40 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::DeleteSessionComplete { source, session_id } => {
-            remove_session_from_pickers(app, &source, &session_id);
+        TaskResult::DeleteSessionComplete {
+            source,
+            session_id,
+            after,
+        } => {
+            use crate::app::actions::AfterSessionDelete;
+            remove_session_from_pickers(
+                app,
+                &source,
+                &session_id,
+                after != AfterSessionDelete::Stay,
+            );
+            if after == AfterSessionDelete::Stay {
+                app.show_toast("Session deleted");
+                return vec![];
+            }
+            let sid = acp::SessionId::new(session_id.clone());
+            let to_remove: Vec<_> = app
+                .agents
+                .iter()
+                .filter(|(_, agent)| agent.session.session_id.as_ref() == Some(&sid))
+                .map(|(id, _)| *id)
+                .collect();
+            let foreground =
+                matches!(app.active_view, ActiveView::Agent(id) if to_remove.contains(&id));
+            for id in to_remove {
+                remove_agent_and_cleanup(app, id);
+            }
+            let mut effects = unregister_session_effect(Some(sid));
+            if foreground && after == AfterSessionDelete::Welcome {
+                effects.extend(dispatch_exit_session(app));
+            }
             app.show_toast("Session deleted");
-            vec![]
+            effects
         }
         TaskResult::DeleteSessionFailed {
             source,

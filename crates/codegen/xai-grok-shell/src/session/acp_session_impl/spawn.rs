@@ -435,6 +435,7 @@ pub(crate) async fn spawn_session_actor(
     goal_enabled: bool,
     background_workflows_enabled: bool,
     subagents_enabled: bool,
+    subagents_max_depth: u32,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -906,6 +907,7 @@ pub(crate) async fn spawn_session_actor(
                 std::sync::Arc::new(LocalTerminalBackend::new_local_with_persistent_shell(
                     resolve_search_shadows(),
                     resolve_policy(),
+                    tool_context.process_scope.clone(),
                 ))
             }
             TerminalBackendKind::LocalNonPersistent => {
@@ -916,6 +918,7 @@ pub(crate) async fn spawn_session_actor(
                     resolve_search_shadows(),
                     login_shell_capture,
                     resolve_policy(),
+                    tool_context.process_scope.clone(),
                 ))
             }
         };
@@ -971,7 +974,7 @@ pub(crate) async fn spawn_session_actor(
             memory_enabled: memory_config.is_some(),
             auto_update,
             cwd: tool_context.cwd.as_str().to_owned(),
-            skills_config: skills_config.clone(),
+            skill_names: Vec::new(),
             compat,
             plugin_registry: plugin_registry.clone(),
             plugin_names,
@@ -1198,6 +1201,11 @@ pub(crate) async fn spawn_session_actor(
         }
         Arc::new(TokioMutex::new(state))
     };
+    let scheduler_background_loops = crate::util::config::resolve_scheduler_background_loops(
+        remote_settings
+            .as_ref()
+            .and_then(|r| r.scheduler_background_loops),
+    );
     let rebuild_spec = std::sync::Arc::new(crate::session::agent_rebuild::AgentRebuildSpec {
         working_directory: tool_context.cwd.as_path().to_path_buf(),
         terminal_backend: terminal_backend.clone(),
@@ -1247,15 +1255,12 @@ pub(crate) async fn spawn_session_actor(
         monitor_event_buffer: tool_context.monitor_event_buffer.clone(),
         user_question_tx: user_question_tx.clone(),
         subagent_depth: tool_context.subagent_depth,
+        subagents_max_depth,
         session_id_str: session_info.id.0.to_string(),
         blocking_wait_depth: tool_context.blocking_wait_depth.clone(),
         respect_gitignore,
         path_not_found_hints,
-        scheduler_background_loops: crate::util::config::resolve_scheduler_background_loops(
-            remote_settings
-                .as_ref()
-                .and_then(|r| r.scheduler_background_loops),
-        ),
+        scheduler_background_loops,
         mcp_state: mcp_state.clone(),
         managed_gateway_tool_client: managed_gateway_tool_client.clone(),
         is_non_interactive: startup_hints.non_interactive,
@@ -2351,6 +2356,7 @@ pub(crate) async fn spawn_session_actor(
             upload_failures_since_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tool_context: tool_context_for_handle,
             model_id: session_model_id,
+            scheduler_background_loops,
             reasoning_effort: sampling_config.reasoning_effort,
             yolo_mode: session_yolo_mode,
             origin_client: origin_client.clone(),
@@ -2486,6 +2492,7 @@ pub(crate) async fn spawn_session_on_thread(
     goal_enabled: bool,
     background_workflows_enabled: bool,
     subagents_enabled: bool,
+    subagents_max_depth: u32,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -2663,6 +2670,7 @@ pub(crate) async fn spawn_session_on_thread(
                         goal_enabled,
                         background_workflows_enabled,
                         subagents_enabled,
+                        subagents_max_depth,
                         ask_user_question_enabled,
                         client_hooks,
                         prompt_display_cwd,
