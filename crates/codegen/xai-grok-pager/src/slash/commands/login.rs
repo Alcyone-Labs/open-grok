@@ -6,12 +6,13 @@ use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, Slas
 pub struct LoginCommand;
 
 /// Provider choices shared by slash completion and the modal opened by a bare
-/// `/login`. The modal can include the live Kimi and Fireworks credential
+/// `/login`. The modal can include live API-key credential
 /// sources while the inline completion path uses the provider-neutral
 /// description.
 pub(crate) fn provider_items(
     kimi_status: Option<crate::settings::SecretStatus>,
     fireworks_status: Option<crate::settings::SecretStatus>,
+    deepseek_status: Option<crate::settings::SecretStatus>,
     opencode_go_status: Option<crate::settings::SecretStatus>,
 ) -> Vec<ArgItem> {
     let api_key_description = |status: Option<crate::settings::SecretStatus>| match status {
@@ -20,6 +21,7 @@ pub(crate) fn provider_items(
     };
     let kimi_description = api_key_description(kimi_status);
     let fireworks_description = api_key_description(fireworks_status);
+    let deepseek_description = api_key_description(deepseek_status);
     let opencode_go_description = api_key_description(opencode_go_status);
     vec![
         ArgItem {
@@ -47,6 +49,12 @@ pub(crate) fn provider_items(
             description: fireworks_description,
         },
         ArgItem {
+            display: "DeepSeek".to_owned(),
+            match_text: "deepseek api direct key".to_owned(),
+            insert_text: "deepseek".to_owned(),
+            description: deepseek_description,
+        },
+        ArgItem {
             display: "OpenCode Go".to_owned(),
             match_text: "opencode go api key dynamic models".to_owned(),
             insert_text: "opencode-go".to_owned(),
@@ -65,9 +73,10 @@ pub(crate) fn provider_action(args: &str) -> Result<Action, String> {
         "codex" | "openai" | "chatgpt" => Ok(Action::LoginCodex),
         "kimi" | "moonshot" => Ok(Action::OpenKimiApiKeyEditor),
         "fireworks" => Ok(Action::OpenFireworksApiKeyEditor),
+        "deepseek" | "deep-seek" | "deepseek-api" => Ok(Action::OpenDeepSeekApiKeyEditor),
         "opencode" | "opencode-go" | "opencode_go" | "go" => Ok(Action::OpenOpenCodeGoApiKeyEditor),
         _ => Err(format!(
-            "Unknown provider: {}. Use /login xai, /login codex, /login kimi, /login fireworks, or /login opencode-go",
+            "Unknown provider: {}. Use /login xai, /login codex, /login kimi, /login fireworks, /login deepseek, or /login opencode-go",
             args.trim()
         )),
     }
@@ -79,11 +88,11 @@ impl SlashCommand for LoginCommand {
     }
 
     fn description(&self) -> &str {
-        "Connect xAI, OpenAI Codex, Kimi, Fireworks AI, or OpenCode Go"
+        "Connect xAI, OpenAI Codex, Kimi, Fireworks AI, DeepSeek, or OpenCode Go"
     }
 
     fn usage(&self) -> &str {
-        "/login [xai|codex|kimi|fireworks|opencode-go]"
+        "/login [xai|codex|kimi|fireworks|deepseek|opencode-go]"
     }
 
     fn takes_args(&self) -> bool {
@@ -95,7 +104,7 @@ impl SlashCommand for LoginCommand {
     }
 
     fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
-        Some(provider_items(None, None, None))
+        Some(provider_items(None, None, None, None))
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {

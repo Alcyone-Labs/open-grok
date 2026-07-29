@@ -266,6 +266,7 @@ pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &Mi
                 PrimaryProvider::Xai => "xAI Grok",
                 PrimaryProvider::Kimi => "Kimi",
                 PrimaryProvider::Fireworks => "Fireworks AI",
+                PrimaryProvider::DeepSeek => "DeepSeek",
                 PrimaryProvider::OpenCodeGo => "OpenCode Go",
             };
             y = put_line(

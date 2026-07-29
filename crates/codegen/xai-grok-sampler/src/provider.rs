@@ -356,6 +356,21 @@ impl ProviderAdapter for FireworksProvider {
 }
 
 #[derive(Debug)]
+pub struct DeepSeekProvider;
+
+impl ProviderAdapter for DeepSeekProvider {
+    fn provider(&self) -> ModelProvider {
+        ModelProvider::DeepSeek
+    }
+
+    fn sanitize_chat_request(&self, request: &mut ChatCompletionRequest) {
+        for message in &mut request.messages {
+            message.model_id = None;
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct OpenCodeGoProvider;
 
 impl ProviderAdapter for OpenCodeGoProvider {
@@ -471,10 +486,11 @@ static XAI_PROVIDER: XaiProvider = XaiProvider;
 static CODEX_PROVIDER: CodexProvider = CodexProvider;
 static KIMI_PROVIDER: KimiProvider = KimiProvider;
 static FIREWORKS_PROVIDER: FireworksProvider = FireworksProvider;
+static DEEPSEEK_PROVIDER: DeepSeekProvider = DeepSeekProvider;
 static OPEN_CODE_GO_PROVIDER: OpenCodeGoProvider = OpenCodeGoProvider;
 
 /// Complete registry for the built-in providers.
-pub static PROVIDER_REGISTRY: [ProviderRegistration; 5] = [
+pub static PROVIDER_REGISTRY: [ProviderRegistration; 6] = [
     ProviderRegistration {
         provider: ModelProvider::Xai,
         adapter: &XAI_PROVIDER,
@@ -492,6 +508,10 @@ pub static PROVIDER_REGISTRY: [ProviderRegistration; 5] = [
         adapter: &FIREWORKS_PROVIDER,
     },
     ProviderRegistration {
+        provider: ModelProvider::DeepSeek,
+        adapter: &DEEPSEEK_PROVIDER,
+    },
+    ProviderRegistration {
         provider: ModelProvider::OpenCodeGo,
         adapter: &OPEN_CODE_GO_PROVIDER,
     },
@@ -506,7 +526,8 @@ pub fn provider_adapter(provider: ModelProvider) -> &'static dyn ProviderAdapter
         ModelProvider::Codex => PROVIDER_REGISTRY[1].adapter,
         ModelProvider::Kimi => PROVIDER_REGISTRY[2].adapter,
         ModelProvider::Fireworks => PROVIDER_REGISTRY[3].adapter,
-        ModelProvider::OpenCodeGo => PROVIDER_REGISTRY[4].adapter,
+        ModelProvider::DeepSeek => PROVIDER_REGISTRY[4].adapter,
+        ModelProvider::OpenCodeGo => PROVIDER_REGISTRY[5].adapter,
     }
 }
 
@@ -719,6 +740,8 @@ mod tests {
             ModelProvider::Codex,
             ModelProvider::Kimi,
             ModelProvider::Fireworks,
+            ModelProvider::DeepSeek,
+            ModelProvider::OpenCodeGo,
         ];
         assert_eq!(PROVIDER_REGISTRY.len(), expected.len());
         for provider in expected {
@@ -741,6 +764,8 @@ mod tests {
             ModelProvider::Codex,
             ModelProvider::Kimi,
             ModelProvider::Fireworks,
+            ModelProvider::DeepSeek,
+            ModelProvider::OpenCodeGo,
         ] {
             let mut request = base_request();
             let original = request.clone();
@@ -762,6 +787,23 @@ mod tests {
                 assert!(request["reasoning"].get("summary").is_none());
             }
         }
+    }
+
+    #[test]
+    fn deepseek_strips_internal_message_model_ids() {
+        use xai_grok_sampling_types::types::ChatRequestMessage;
+
+        let assistant = ChatRequestMessage::assistant(
+            "previous turn",
+            "deepseek-v4-pro",
+            None,
+        );
+        assert!(assistant.model_id.is_some(), "constructor stamps model_id");
+        let mut request = ChatCompletionRequest::new("deepseek-v4-pro", vec![assistant]);
+
+        provider_adapter(ModelProvider::DeepSeek).sanitize_chat_request(&mut request);
+
+        assert!(request.messages[0].model_id.is_none());
     }
 
     #[test]

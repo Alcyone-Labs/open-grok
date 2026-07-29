@@ -1069,7 +1069,10 @@ fn refresh_kimi_sampling_config_for_spawn(
     use xai_grok_sampling_types::ModelProvider;
 
     let provider = config.provider;
-    if !matches!(provider, ModelProvider::Kimi | ModelProvider::Fireworks) {
+    if !matches!(
+        provider,
+        ModelProvider::Kimi | ModelProvider::Fireworks | ModelProvider::DeepSeek
+    ) {
         return Ok(());
     }
     let provider_name = provider.name();

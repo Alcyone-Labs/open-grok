@@ -336,6 +336,26 @@ env_key = "FIREWORKS_API_KEY"
 context_window = 1040000
 ```
 
+DeepSeek API direct is a separate API-key-only provider. Configure it from
+Settings or `/login deepseek`, or export `DEEPSEEK_API_KEY`. Open Grok refreshes
+the curated direct catalog against DeepSeek's models endpoint and keeps these
+credentials isolated from Fireworks-hosted DeepSeek models:
+
+```toml
+[model.deepseek-v4-pro-direct]
+model = "deepseek-v4-pro"
+name = "DeepSeek V4 Pro"
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+api_backend = "chat_completions"
+env_key = "DEEPSEEK_API_KEY"
+context_window = 1000000
+```
+
+For a process-level compatible proxy, set
+`OPENGROK_DEEPSEEK_API_BASE_URL`; UI-stored keys remain restricted to the
+official DeepSeek API host.
+
 API-key-only custom providers require an explicit `base_url`; they never
 inherit the xAI endpoint or credentials.
 

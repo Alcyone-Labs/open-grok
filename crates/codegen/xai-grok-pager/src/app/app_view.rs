@@ -410,6 +410,7 @@ pub enum PrimaryProvider {
     Codex,
     Kimi,
     Fireworks,
+    DeepSeek,
     OpenCodeGo,
 }
 
@@ -430,6 +431,11 @@ impl PrimaryProvider {
             Some(Self::Kimi)
         } else if provider.eq_ignore_ascii_case("fireworks") {
             Some(Self::Fireworks)
+        } else if provider.eq_ignore_ascii_case("deepseek")
+            || provider.eq_ignore_ascii_case("deep_seek")
+            || provider.eq_ignore_ascii_case("deepseek-api")
+        {
+            Some(Self::DeepSeek)
         } else if provider.eq_ignore_ascii_case("opencode_go")
             || provider.eq_ignore_ascii_case("opencode-go")
         {
@@ -730,6 +736,9 @@ pub struct AppView {
     /// Loaded Fireworks sessions awaiting a sampler rebuild. Targets remain
     /// pending while the provider has no credential.
     pub(crate) pending_fireworks_rebind_agents: std::collections::HashSet<AgentId>,
+    pub(crate) deepseek_operation_generation: u64,
+    pub(crate) deepseek_runtime_update_pending: bool,
+    pub(crate) pending_deepseek_rebind_agents: std::collections::HashSet<AgentId>,
     pub(crate) opencode_go_operation_generation: u64,
     pub(crate) opencode_go_runtime_update_pending: bool,
     pub(crate) pending_opencode_go_rebind_agents: std::collections::HashSet<AgentId>,
@@ -1391,6 +1400,17 @@ impl AppView {
         }
     }
 
+    pub(crate) fn cancel_pending_deepseek_rebind(&mut self, agent_id: AgentId) -> bool {
+        let removed = self.pending_deepseek_rebind_agents.remove(&agent_id);
+        if let Some(agent) = self.agents.get_mut(&agent_id) {
+            let was_pending = agent.session.provider_rebind_pending;
+            agent.session.provider_rebind_pending = false;
+            removed || was_pending
+        } else {
+            removed
+        }
+    }
+
     pub(crate) fn cancel_pending_opencode_go_rebind(&mut self, agent_id: AgentId) -> bool {
         let removed = self.pending_opencode_go_rebind_agents.remove(&agent_id);
         if let Some(agent) = self.agents.get_mut(&agent_id) {
@@ -1423,6 +1443,7 @@ impl AppView {
             PrimaryProvider::Codex
             | PrimaryProvider::Kimi
             | PrimaryProvider::Fireworks
+            | PrimaryProvider::DeepSeek
             | PrimaryProvider::OpenCodeGo => {
                 // Preserve the xAI snapshot only when crossing out of xAI.
                 // A non-xAI <-> non-xAI transition sees already-cleared
@@ -1731,6 +1752,9 @@ impl AppView {
             fireworks_operation_generation: 0,
             fireworks_runtime_update_pending: false,
             pending_fireworks_rebind_agents: Default::default(),
+            deepseek_operation_generation: 0,
+            deepseek_runtime_update_pending: false,
+            pending_deepseek_rebind_agents: Default::default(),
             opencode_go_operation_generation: 0,
             opencode_go_runtime_update_pending: false,
             pending_opencode_go_rebind_agents: Default::default(),
@@ -6259,6 +6283,9 @@ pub(crate) mod tests {
             fireworks_operation_generation: 0,
             fireworks_runtime_update_pending: false,
             pending_fireworks_rebind_agents: Default::default(),
+            deepseek_operation_generation: 0,
+            deepseek_runtime_update_pending: false,
+            pending_deepseek_rebind_agents: Default::default(),
             opencode_go_operation_generation: 0,
             opencode_go_runtime_update_pending: false,
             pending_opencode_go_rebind_agents: Default::default(),

@@ -49,6 +49,25 @@ fn next_fireworks_operation_generation(app: &mut AppView) -> u64 {
     app.fireworks_operation_generation
 }
 
+fn remember_loaded_deepseek_sessions(app: &mut AppView) {
+    let mut targets = Vec::new();
+    for (&agent_id, agent) in &mut app.agents {
+        if PrimaryProvider::for_current_model(&agent.session.models)
+            == Some(PrimaryProvider::DeepSeek)
+        {
+            agent.session.provider_rebind_pending = true;
+            targets.push(agent_id);
+        }
+    }
+    app.pending_deepseek_rebind_agents.extend(targets);
+}
+
+fn next_deepseek_operation_generation(app: &mut AppView) -> u64 {
+    app.deepseek_operation_generation = app.deepseek_operation_generation.wrapping_add(1).max(1);
+    app.deepseek_runtime_update_pending = true;
+    app.deepseek_operation_generation
+}
+
 fn remember_loaded_opencode_go_sessions(app: &mut AppView) {
     let mut targets = Vec::new();
     for (&agent_id, agent) in &mut app.agents {
@@ -229,6 +248,29 @@ pub(in crate::app::dispatch) fn clear_fireworks_api_key(app: &mut AppView) -> Ve
     let generation = next_fireworks_operation_generation(app);
     app.show_toast("Removing Fireworks AI API key…");
     vec![Effect::UpdateFireworksApiKey {
+        generation,
+        key: None,
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_deepseek_api_key(
+    app: &mut AppView,
+    key: SecretInput,
+) -> Vec<Effect> {
+    remember_loaded_deepseek_sessions(app);
+    let generation = next_deepseek_operation_generation(app);
+    app.show_toast("Saving DeepSeek API key and refreshing models…");
+    vec![Effect::UpdateDeepSeekApiKey {
+        generation,
+        key: Some(key),
+    }]
+}
+
+pub(in crate::app::dispatch) fn clear_deepseek_api_key(app: &mut AppView) -> Vec<Effect> {
+    remember_loaded_deepseek_sessions(app);
+    let generation = next_deepseek_operation_generation(app);
+    app.show_toast("Removing DeepSeek API key…");
+    vec![Effect::UpdateDeepSeekApiKey {
         generation,
         key: None,
     }]
@@ -2171,27 +2213,38 @@ pub(in crate::app::dispatch) fn set_default_model(
         return vec![];
     }
 
-    let held_by_fireworks = app.pending_fireworks_rebind_agents.contains(&aid);
-    let explicit_non_kimi_override = !held_by_fireworks
-        && app.agents.get(&aid).is_some_and(|agent| {
-            agent.session.provider_rebind_pending
-                && PrimaryProvider::for_model(&agent.session.models, &new_id)
-                    != Some(PrimaryProvider::Kimi)
-        });
-    let explicit_non_fireworks_override = held_by_fireworks
-        && app.agents.get(&aid).is_some_and(|agent| {
-            agent.session.provider_rebind_pending
-                && PrimaryProvider::for_model(&agent.session.models, &new_id)
-                    != Some(PrimaryProvider::Fireworks)
-        });
+    let held_rebind_provider = if app.pending_fireworks_rebind_agents.contains(&aid) {
+        Some(PrimaryProvider::Fireworks)
+    } else if app.pending_deepseek_rebind_agents.contains(&aid) {
+        Some(PrimaryProvider::DeepSeek)
+    } else if app.pending_opencode_go_rebind_agents.contains(&aid) {
+        Some(PrimaryProvider::OpenCodeGo)
+    } else {
+        Some(PrimaryProvider::Kimi)
+    };
+    let explicit_provider_override = app.agents.get(&aid).is_some_and(|agent| {
+        agent.session.provider_rebind_pending
+            && held_rebind_provider.is_some_and(|provider| {
+                PrimaryProvider::for_model(&agent.session.models, &new_id) != Some(provider)
+            })
+    });
     // Idempotent: same model already active → no-op.
     if prev_id.as_ref() == Some(&new_id) {
-        return if explicit_non_kimi_override || explicit_non_fireworks_override {
-            if explicit_non_kimi_override {
-                app.cancel_pending_kimi_rebind(aid);
-            }
-            if explicit_non_fireworks_override {
-                app.cancel_pending_fireworks_rebind(aid);
+        return if explicit_provider_override {
+            match held_rebind_provider {
+                Some(PrimaryProvider::Kimi) => {
+                    app.cancel_pending_kimi_rebind(aid);
+                }
+                Some(PrimaryProvider::Fireworks) => {
+                    app.cancel_pending_fireworks_rebind(aid);
+                }
+                Some(PrimaryProvider::DeepSeek) => {
+                    app.cancel_pending_deepseek_rebind(aid);
+                }
+                Some(PrimaryProvider::OpenCodeGo) => {
+                    app.cancel_pending_opencode_go_rebind(aid);
+                }
+                Some(PrimaryProvider::Xai | PrimaryProvider::Codex) | None => {}
             }
             crate::app::dispatch::maybe_drain_queue_and_note_peek(app, aid)
         } else {

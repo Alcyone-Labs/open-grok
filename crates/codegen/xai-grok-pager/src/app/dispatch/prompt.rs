@@ -629,6 +629,8 @@ pub(super) fn dispatch_send_prompt_inner(
                     kimi_api_key_status: crate::settings::SecretStatus::Missing,
                     kimi_code_api_key_status: crate::settings::SecretStatus::Missing,
                     fireworks_api_key_status: crate::settings::SecretStatus::Missing,
+                    deepseek_api_key_status:
+                        crate::app::dispatch::settings::ui::deepseek_api_key_status(),
                     opencode_go_api_key_status:
                         crate::app::dispatch::settings::ui::opencode_go_api_key_status(),
                     opencode_go_models: app.opencode_go_models.clone(),

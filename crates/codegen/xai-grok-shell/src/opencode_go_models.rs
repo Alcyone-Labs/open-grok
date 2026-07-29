@@ -441,6 +441,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some(&catalog),
         );
         assert!(
@@ -453,6 +454,7 @@ mod tests {
         cfg.models.opencode_go_enabled_models = vec!["messages-model".to_owned()];
         let enabled = crate::agent::models::resolve_model_catalog_with_provider_catalogs(
             &cfg,
+            None,
             None,
             None,
             None,

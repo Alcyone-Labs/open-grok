@@ -361,6 +361,8 @@ pub struct PagerLocalSnapshot {
     pub kimi_code_api_key_status: SecretStatus,
     /// Status-only mirror for the Fireworks AI API-key source.
     pub fireworks_api_key_status: SecretStatus,
+    /// Status-only mirror for the direct DeepSeek API-key source.
+    pub deepseek_api_key_status: SecretStatus,
     pub opencode_go_api_key_status: SecretStatus,
     pub opencode_go_models: Vec<xai_grok_shell::opencode_go_models::OpenCodeGoModelDescriptor>,
     pub opencode_go_enabled_models: Vec<String>,
@@ -433,6 +435,7 @@ impl Default for PagerLocalSnapshot {
             kimi_api_key_status: SecretStatus::Missing,
             kimi_code_api_key_status: SecretStatus::Missing,
             fireworks_api_key_status: SecretStatus::Missing,
+            deepseek_api_key_status: SecretStatus::Missing,
             opencode_go_api_key_status: SecretStatus::Missing,
             opencode_go_models: Vec::new(),
             opencode_go_enabled_models: Vec::new(),
@@ -869,6 +872,7 @@ pub fn current_value_for(
         "kimi_api_key" => Some(SettingValue::SecretStatus(pager.kimi_api_key_status)),
         "kimi_code_api_key" => Some(SettingValue::SecretStatus(pager.kimi_code_api_key_status)),
         "fireworks_api_key" => Some(SettingValue::SecretStatus(pager.fireworks_api_key_status)),
+        "deepseek_api_key" => Some(SettingValue::SecretStatus(pager.deepseek_api_key_status)),
         "opencode_go_api_key" => Some(SettingValue::SecretStatus(pager.opencode_go_api_key_status)),
         "toolset.perplexity_web_search.enabled" => {
             Some(SettingValue::Bool(pager.perplexity_web_search_enabled))
@@ -878,6 +882,7 @@ pub fn current_value_for(
         | "toolset.web_search_source.kimi_platform"
         | "toolset.web_search_source.kimi_code"
         | "toolset.web_search_source.fireworks"
+        | "toolset.web_search_source.deepseek"
         | "toolset.web_search_source.opencode_go" => {
             use xai_grok_shell::tools::config::WebSearchSourceTarget;
             let target = match key {
@@ -885,6 +890,7 @@ pub fn current_value_for(
                 "toolset.web_search_source.codex" => WebSearchSourceTarget::Codex,
                 "toolset.web_search_source.kimi_platform" => WebSearchSourceTarget::KimiPlatform,
                 "toolset.web_search_source.fireworks" => WebSearchSourceTarget::Fireworks,
+                "toolset.web_search_source.deepseek" => WebSearchSourceTarget::DeepSeek,
                 "toolset.web_search_source.opencode_go" => WebSearchSourceTarget::OpenCodeGo,
                 _ => WebSearchSourceTarget::KimiCode,
             };
@@ -1194,6 +1200,7 @@ mod tests {
                     "kimi_api_key"
                     | "kimi_code_api_key"
                     | "fireworks_api_key"
+                    | "deepseek_api_key"
                     | "opencode_go_api_key"
                     | "perplexity_api_key",
                     SettingKind::Secret,
@@ -1534,6 +1541,12 @@ mod tests {
                         default,
                         "Antigravity full access defaults ON (agy skip-permissions); \
                          the row is the read-only opt-out"
+                    );
+                }
+                ("toolset.web_search_source.deepseek", SettingKind::Enum { default, .. }) => {
+                    assert_eq!(
+                        *default, "xai",
+                        "DeepSeek sessions default to xAI search"
                     );
                 }
                 ("toolset.web_search_source.opencode_go", SettingKind::Enum { default, .. }) => {

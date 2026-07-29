@@ -296,7 +296,7 @@ pub fn resolve_model_catalog(
     cfg: &config::Config,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
-    resolve_model_catalog_with_provider_catalogs(cfg, prefetched, None, None, None, None)
+    resolve_model_catalog_with_provider_catalogs(cfg, prefetched, None, None, None, None, None)
 }
 
 /// Resolve the combined catalog while preserving each provider's independently
@@ -307,6 +307,7 @@ pub(crate) fn resolve_model_catalog_with_provider_catalogs(
     codex_catalog: Option<&CodexModelsCatalog>,
     kimi_catalog: Option<&KimiModelsCatalog>,
     fireworks_catalog: Option<&FireworksModelsCatalog>,
+    deepseek_catalog: Option<&DeepSeekModelsCatalog>,
     opencode_go_catalog: Option<&OpenCodeGoModelsCatalog>,
 ) -> IndexMap<String, ModelEntry> {
     let codex_entries = codex_catalog.map(CodexModelsCatalog::entries);
@@ -316,6 +317,9 @@ pub(crate) fn resolve_model_catalog_with_provider_catalogs(
     let fireworks_entries = fireworks_catalog.map(FireworksModelsCatalog::entries);
     let fireworks_authoritative =
         fireworks_catalog.is_some_and(FireworksModelsCatalog::is_authoritative);
+    let deepseek_entries = deepseek_catalog.map(DeepSeekModelsCatalog::entries);
+    let deepseek_authoritative =
+        deepseek_catalog.is_some_and(DeepSeekModelsCatalog::is_authoritative);
     let opencode_go_entries = opencode_go_catalog.map(OpenCodeGoModelsCatalog::entries);
     let opencode_go_authoritative =
         opencode_go_catalog.is_some_and(OpenCodeGoModelsCatalog::is_authoritative);
@@ -329,6 +333,8 @@ pub(crate) fn resolve_model_catalog_with_provider_catalogs(
             kimi_authoritative,
             fireworks_entries,
             fireworks_authoritative,
+            deepseek_entries,
+            deepseek_authoritative,
             opencode_go_entries,
             opencode_go_authoritative,
         );

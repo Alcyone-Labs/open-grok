@@ -52,6 +52,7 @@ const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "kimi_api_key",
     "kimi_code_api_key",
     "fireworks_api_key",
+    "deepseek_api_key",
     "toolset.perplexity_web_search.enabled",
     "perplexity_api_key",
     "toolset.web_search_source.xai",
@@ -59,6 +60,7 @@ const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "toolset.web_search_source.kimi_platform",
     "toolset.web_search_source.kimi_code",
     "toolset.web_search_source.fireworks",
+    "toolset.web_search_source.deepseek",
     "toolset.x_search.enabled",
     "recap_model",
     "memory_model",
@@ -2225,6 +2227,7 @@ fn registry_kind_membership_through_pr_14() {
             "theme",
             "toolset.web_search_source.codex",
             "toolset.web_search_source.fireworks",
+            "toolset.web_search_source.deepseek",
             "toolset.web_search_source.kimi_code",
             "toolset.web_search_source.kimi_platform",
             "toolset.web_search_source.xai",
@@ -2273,6 +2276,7 @@ fn registry_kind_membership_through_pr_14() {
     assert_eq!(
         secret_keys,
         vec![
+            "deepseek_api_key",
             "fireworks_api_key",
             "kimi_api_key",
             "kimi_code_api_key",
@@ -2318,6 +2322,7 @@ fn enum_settings_membership_through_pr_14() {
             "theme",
             "toolset.web_search_source.codex",
             "toolset.web_search_source.fireworks",
+            "toolset.web_search_source.deepseek",
             "toolset.web_search_source.kimi_code",
             "toolset.web_search_source.kimi_platform",
             "toolset.web_search_source.xai",
@@ -2386,12 +2391,16 @@ fn defaults_round_trip_through_registry() {
             "fireworks_api_key" => {
                 SettingValue::SecretStatus(xai_grok_pager::settings::SecretStatus::Missing)
             }
+            "deepseek_api_key" => {
+                SettingValue::SecretStatus(xai_grok_pager::settings::SecretStatus::Missing)
+            }
             "toolset.perplexity_web_search.enabled" => SettingValue::Bool(false),
             "toolset.web_search_source.xai" => SettingValue::Enum("xai"),
             "toolset.web_search_source.codex" => SettingValue::Enum("native"),
             "toolset.web_search_source.kimi_platform" => SettingValue::Enum("xai"),
             "toolset.web_search_source.kimi_code" => SettingValue::Enum("xai"),
             "toolset.web_search_source.fireworks" => SettingValue::Enum("xai"),
+            "toolset.web_search_source.deepseek" => SettingValue::Enum("xai"),
             "toolset.x_search.enabled" => SettingValue::Bool(true),
             "perplexity_api_key" => {
                 SettingValue::SecretStatus(xai_grok_pager::settings::SecretStatus::Missing)

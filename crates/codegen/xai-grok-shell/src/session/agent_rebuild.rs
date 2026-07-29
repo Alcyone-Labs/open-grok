@@ -610,10 +610,10 @@ mod tests {
         ResolvedWebSearchState::resolved_for(candidates, ModelProvider::default())
     }
 
-    /// Defaults with xAI signed in: xAI and Kimi ride the xAI client search,
-    /// Codex keeps its native declaration (no client tool).
+    /// Defaults with xAI signed in: providers without native search ride the
+    /// xAI client search; Codex keeps its native declaration (no client tool).
     #[test]
-    fn default_sources_route_xai_search_to_xai_and_kimi_only() {
+    fn default_sources_route_xai_search_to_non_native_providers() {
         let s = state(candidates(
             xai_enabled_config(),
             None,
@@ -624,6 +624,9 @@ mod tests {
         assert!(s.allowed_for_provider(ModelProvider::Xai));
         assert!(!s.allowed_for_provider(ModelProvider::Codex));
         assert!(s.allowed_for_provider(ModelProvider::Kimi));
+        assert!(s.allowed_for_provider(ModelProvider::Fireworks));
+        assert!(s.allowed_for_provider(ModelProvider::DeepSeek));
+        assert!(s.allowed_for_provider(ModelProvider::OpenCodeGo));
         assert!(!s.native_hosted_web_search_suppressed(ModelProvider::Codex));
     }
 
@@ -642,6 +645,9 @@ mod tests {
             ModelProvider::Xai,
             ModelProvider::Codex,
             ModelProvider::Kimi,
+            ModelProvider::Fireworks,
+            ModelProvider::DeepSeek,
+            ModelProvider::OpenCodeGo,
         ] {
             assert!(!s.allowed_for_provider(provider), "{provider:?}");
         }

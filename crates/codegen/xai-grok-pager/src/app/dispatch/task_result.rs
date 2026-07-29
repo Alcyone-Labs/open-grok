@@ -866,6 +866,220 @@ fn handle_fireworks_model_rebind_complete(
     effects
 }
 
+fn capture_deepseek_sessions_created_during_update(app: &mut AppView) {
+    let mut targets = Vec::new();
+    for (&agent_id, agent) in &mut app.agents {
+        if PrimaryProvider::for_current_model(&agent.session.models)
+            == Some(PrimaryProvider::DeepSeek)
+        {
+            agent.session.provider_rebind_pending = true;
+            targets.push(agent_id);
+        }
+    }
+    app.pending_deepseek_rebind_agents.extend(targets);
+}
+
+fn pending_deepseek_model(models: &crate::acp::model_state::ModelState) -> Option<acp::ModelId> {
+    let is_deepseek = |model_id: &acp::ModelId| {
+        PrimaryProvider::for_model(models, model_id) == Some(PrimaryProvider::DeepSeek)
+    };
+    models
+        .current
+        .clone()
+        .filter(|id| is_deepseek(id))
+        .or_else(|| models.available.keys().find(|id| is_deepseek(id)).cloned())
+}
+
+fn rebind_pending_deepseek_sessions(app: &mut AppView, generation: u64) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    let targets = app
+        .pending_deepseek_rebind_agents
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    let mut completed = Vec::new();
+    for agent_id in targets {
+        let Some(agent) = app.agents.get_mut(&agent_id) else {
+            completed.push(agent_id);
+            continue;
+        };
+        if !agent.session.provider_rebind_pending {
+            completed.push(agent_id);
+            continue;
+        }
+        if agent.session.model_switch_pending {
+            continue;
+        }
+        let Some(session_id) = agent.session.session_id.clone() else {
+            continue;
+        };
+        let Some(model_id) = pending_deepseek_model(&agent.session.models) else {
+            tracing::warn!(?agent_id, "DeepSeek sampler rebind has no matching model");
+            agent.scrollback.push_block(RenderBlock::system(
+                "No DeepSeek model is available for this session; queued prompts are paused. Adjust the model allowlist or switch this tab to another provider.".to_owned(),
+            ));
+            continue;
+        };
+        let effort = (agent.session.models.current.as_ref() == Some(&model_id))
+            .then_some(agent.session.models.reasoning_effort)
+            .flatten();
+        agent.session.model_switch_pending = true;
+        effects.push(Effect::RebindDeepSeekModel {
+            agent_id,
+            session_id,
+            model_id,
+            effort,
+            generation,
+        });
+    }
+    for agent_id in completed {
+        app.pending_deepseek_rebind_agents.remove(&agent_id);
+    }
+    effects
+}
+
+fn after_deepseek_session_ready(
+    app: &mut AppView,
+    agent_id: crate::app::agent::AgentId,
+    mut effects: Vec<Effect>,
+) -> Vec<Effect> {
+    if app.deepseek_runtime_update_pending {
+        if let Some(agent) = app.agents.get_mut(&agent_id)
+            && PrimaryProvider::for_current_model(&agent.session.models)
+                == Some(PrimaryProvider::DeepSeek)
+        {
+            agent.session.provider_rebind_pending = true;
+            app.pending_deepseek_rebind_agents.insert(agent_id);
+        }
+        return effects;
+    }
+    if app.pending_deepseek_rebind_agents.contains(&agent_id)
+        && app.agents.get(&agent_id).is_some_and(|agent| {
+            agent.session.provider_rebind_pending && !agent.session.model_switch_pending
+        })
+    {
+        effects.extend(rebind_pending_deepseek_sessions(
+            app,
+            app.deepseek_operation_generation,
+        ));
+    }
+    effects
+}
+
+fn mark_runtime_pending_deepseek_session(
+    app: &mut AppView,
+    agent_id: crate::app::agent::AgentId,
+    incoming_models: Option<&acp::SessionModelState>,
+) {
+    if !app.deepseek_runtime_update_pending && app.deepseek_operation_generation == 0 {
+        return;
+    }
+    let incoming = incoming_models
+        .cloned()
+        .map(|models| crate::acp::model_state::ModelState::from(Some(models)));
+    let is_deepseek = incoming.as_ref().map_or_else(
+        || {
+            app.agents.get(&agent_id).is_some_and(|agent| {
+                PrimaryProvider::for_current_model(&agent.session.models)
+                    == Some(PrimaryProvider::DeepSeek)
+            })
+        },
+        |models| PrimaryProvider::for_current_model(models) == Some(PrimaryProvider::DeepSeek),
+    );
+    if incoming.is_some() && !is_deepseek {
+        app.cancel_pending_deepseek_rebind(agent_id);
+        return;
+    }
+    if is_deepseek && let Some(agent) = app.agents.get_mut(&agent_id) {
+        agent.session.provider_rebind_pending = true;
+        app.pending_deepseek_rebind_agents.insert(agent_id);
+    }
+}
+
+fn finish_deepseek_rebind(app: &mut AppView, agent_id: crate::app::agent::AgentId) {
+    app.pending_deepseek_rebind_agents.remove(&agent_id);
+    if let Some(agent) = app.agents.get_mut(&agent_id) {
+        agent.session.provider_rebind_pending = false;
+    }
+}
+
+fn handle_deepseek_model_rebind_complete(
+    app: &mut AppView,
+    agent_id: crate::app::agent::AgentId,
+    session_id: acp::SessionId,
+    model_id: acp::ModelId,
+    effort: Option<xai_grok_shell::sampling::types::ReasoningEffort>,
+    generation: u64,
+    result: Result<(), crate::app::actions::SwitchModelError>,
+) -> Vec<Effect> {
+    let still_owned = app.pending_deepseek_rebind_agents.contains(&agent_id);
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        app.pending_deepseek_rebind_agents.remove(&agent_id);
+        return vec![];
+    };
+    if agent.session.session_id.as_ref() != Some(&session_id) {
+        if !agent.session.provider_rebind_pending {
+            app.pending_deepseek_rebind_agents.remove(&agent_id);
+            return vec![];
+        }
+        if agent.session.model_switch_pending {
+            return vec![];
+        }
+        return rebind_pending_deepseek_sessions(app, app.deepseek_operation_generation);
+    }
+    if !still_owned || !agent.session.provider_rebind_pending {
+        agent.session.model_switch_pending = false;
+        let Some(target_model) = agent.session.models.current.clone() else {
+            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+        };
+        if target_model == model_id {
+            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+        }
+        let Some(current_session_id) = agent.session.session_id.clone() else {
+            agent.session.provider_rebind_pending = true;
+            return vec![];
+        };
+        let target_effort = agent.session.models.reasoning_effort;
+        agent.session.provider_rebind_pending = true;
+        agent.session.model_switch_pending = true;
+        return vec![Effect::SwitchModel {
+            agent_id,
+            session_id: current_session_id,
+            model_id: target_model,
+            effort: target_effort,
+            prev_model_id: None,
+        }];
+    }
+    agent.session.model_switch_pending = false;
+    if generation != app.deepseek_operation_generation {
+        return rebind_pending_deepseek_sessions(app, app.deepseek_operation_generation);
+    }
+    match result {
+        Ok(()) => agent.session.models.set_current(model_id, effort),
+        Err(error) => {
+            agent.scrollback.push_block(RenderBlock::system(format!(
+                "Couldn't refresh the DeepSeek session after its credential changed; queued prompts are paused. Update the DeepSeek key or switch this tab to another provider. ({})",
+                match error {
+                    crate::app::actions::SwitchModelError::Other(message) => {
+                        scrub_error_for_toast(&message)
+                    }
+                    crate::app::actions::SwitchModelError::IncompatibleAgent { .. } => {
+                        "the current agent is incompatible with the selected DeepSeek model"
+                            .to_owned()
+                    }
+                },
+            )));
+            return vec![];
+        }
+    }
+    finish_deepseek_rebind(app, agent_id);
+    let mut effects = crate::app::dispatch::maybe_drain_queue_and_note_peek(app, agent_id);
+    if matches!(app.active_view, ActiveView::Agent(active) if active == agent_id) {
+        effects.extend(app.sync_primary_provider_from_active_agent());
+    }
+    effects
+}
+
 fn capture_opencode_go_sessions_created_during_update(app: &mut AppView) {
     let mut targets = Vec::new();
     for (&agent_id, agent) in &mut app.agents {
@@ -1103,6 +1317,14 @@ fn fireworks_credential_configured() -> bool {
         || xai_grok_shell::auth::provider_api_key_is_configured(
             &xai_grok_tools::util::grok_home::grok_home(),
             xai_grok_shell::sampling::types::ModelProvider::Fireworks,
+        )
+}
+
+fn deepseek_credential_configured() -> bool {
+    xai_grok_shell::deepseek_models::environment_api_key_is_configured()
+        || xai_grok_shell::auth::provider_api_key_is_configured(
+            &xai_grok_tools::util::grok_home::grok_home(),
+            xai_grok_shell::sampling::types::ModelProvider::DeepSeek,
         )
 }
 
@@ -1450,11 +1672,13 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
+            mark_runtime_pending_deepseek_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_opencode_go_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_perplexity_session(app, agent_id, new_models.as_ref());
             let effects = handle_session_created(app, agent_id, session_id, new_models);
             let effects = after_kimi_session_ready(app, agent_id, effects);
             let effects = after_fireworks_session_ready(app, agent_id, effects);
+            let effects = after_deepseek_session_ready(app, agent_id, effects);
             after_opencode_go_session_ready(app, agent_id, effects)
         }
         TaskResult::SessionFailed { agent_id, error } => {
@@ -1469,6 +1693,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
+            mark_runtime_pending_deepseek_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_opencode_go_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_perplexity_session(app, agent_id, new_models.as_ref());
             let effects = handle_worktree_session_created(
@@ -1481,6 +1706,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             );
             let effects = after_kimi_session_ready(app, agent_id, effects);
             let effects = after_fireworks_session_ready(app, agent_id, effects);
+            let effects = after_deepseek_session_ready(app, agent_id, effects);
             after_opencode_go_session_ready(app, agent_id, effects)
         }
         TaskResult::WorktreeForked {
@@ -1560,6 +1786,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_fireworks_session(app, agent_id, new_models.as_ref());
+            mark_runtime_pending_deepseek_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_opencode_go_session(app, agent_id, new_models.as_ref());
             mark_runtime_pending_perplexity_session(app, agent_id, new_models.as_ref());
             let effects = handle_session_loaded(
@@ -1574,6 +1801,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             );
             let effects = after_kimi_session_ready(app, agent_id, effects);
             let effects = after_fireworks_session_ready(app, agent_id, effects);
+            let effects = after_deepseek_session_ready(app, agent_id, effects);
             after_opencode_go_session_ready(app, agent_id, effects)
         }
         TaskResult::SessionTitleFromDisk { agent_id, title } => {
@@ -1666,10 +1894,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             mark_runtime_pending_kimi_session(app, agent_id, None);
             mark_runtime_pending_fireworks_session(app, agent_id, None);
+            mark_runtime_pending_deepseek_session(app, agent_id, None);
             mark_runtime_pending_opencode_go_session(app, agent_id, None);
             let effects = handle_session_restored(app, agent_id, local_session_id);
             let effects = after_kimi_session_ready(app, agent_id, effects);
             let effects = after_fireworks_session_ready(app, agent_id, effects);
+            let effects = after_deepseek_session_ready(app, agent_id, effects);
             after_opencode_go_session_ready(app, agent_id, effects)
         }
         TaskResult::SessionRestoreFailed { agent_id, error } => {
@@ -1800,9 +2030,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             // session flag) keeps the pre-Fireworks rule: released on leaving
             // Kimi.
             let held_by_fireworks = app.pending_fireworks_rebind_agents.contains(&agent_id);
+            let held_by_deepseek = app.pending_deepseek_rebind_agents.contains(&agent_id);
             let held_by_opencode_go = app.pending_opencode_go_rebind_agents.contains(&agent_id);
             let left_kimi = switch_succeeded
                 && !held_by_fireworks
+                && !held_by_deepseek
                 && !held_by_opencode_go
                 && target_provider != Some(PrimaryProvider::Kimi);
             if left_kimi {
@@ -1813,6 +2045,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 && target_provider != Some(PrimaryProvider::Fireworks);
             if left_fireworks {
                 app.cancel_pending_fireworks_rebind(agent_id);
+            }
+            let left_deepseek = switch_succeeded
+                && held_by_deepseek
+                && target_provider != Some(PrimaryProvider::DeepSeek);
+            if left_deepseek {
+                app.cancel_pending_deepseek_rebind(agent_id);
             }
             let left_opencode_go = switch_succeeded
                 && held_by_opencode_go
@@ -1852,6 +2090,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 effects.extend(rebind_pending_fireworks_sessions(
                     app,
                     app.fireworks_operation_generation,
+                ));
+            }
+            if app.pending_deepseek_rebind_agents.contains(&agent_id)
+                && app.agents.get(&agent_id).is_some_and(|agent| {
+                    agent.session.provider_rebind_pending && !agent.session.model_switch_pending
+                })
+            {
+                effects.extend(rebind_pending_deepseek_sessions(
+                    app,
+                    app.deepseek_operation_generation,
                 ));
             }
             if app.pending_opencode_go_rebind_agents.contains(&agent_id)
@@ -1976,6 +2224,84 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             generation,
             result,
         } => handle_fireworks_model_rebind_complete(
+            app, agent_id, session_id, model_id, effort, generation, result,
+        ),
+        TaskResult::DeepSeekApiKeyUpdated {
+            configured,
+            generation,
+            stale,
+            warning,
+            error,
+            models,
+        } => {
+            if stale || generation != app.deepseek_operation_generation {
+                return vec![];
+            }
+            capture_deepseek_sessions_created_during_update(app);
+            let storage_succeeded = error.is_none();
+            super::settings::ui::refresh_open_settings_modals(app);
+            let credential_status = super::settings::ui::deepseek_api_key_status();
+            let runtime_apply_unconfirmed = warning.is_some() && models.is_none();
+            if let Some(error) = error {
+                app.show_toast(&format!(
+                    "✗ Could not {} DeepSeek API key: {}; queued DeepSeek prompts remain paused",
+                    if configured { "save" } else { "remove" },
+                    scrub_error_for_toast(&error),
+                ));
+            } else {
+                let message = if configured {
+                    if credential_status == crate::settings::SecretStatus::EnvironmentOverride {
+                        "✓ DeepSeek API key saved to UI storage; environment key remains active"
+                            .to_owned()
+                    } else if warning.is_some() {
+                        "✓ DeepSeek API key saved".to_owned()
+                    } else {
+                        "✓ DeepSeek API key saved; models refreshed".to_owned()
+                    }
+                } else if credential_status == crate::settings::SecretStatus::EnvironmentOverride {
+                    "✓ UI-stored DeepSeek API key cleared; environment key remains active".to_owned()
+                } else {
+                    "✓ UI-stored DeepSeek API key cleared".to_owned()
+                };
+                if let Some(warning) = warning {
+                    app.show_toast(&format!(
+                        "{message}; model query warning: {}{}",
+                        scrub_error_for_toast(&warning),
+                        if runtime_apply_unconfirmed {
+                            "; queued DeepSeek prompts remain paused"
+                        } else {
+                            ""
+                        },
+                    ));
+                } else {
+                    app.show_toast(&message);
+                }
+            }
+            if !storage_succeeded || runtime_apply_unconfirmed {
+                return vec![];
+            }
+            app.deepseek_runtime_update_pending = false;
+            if let Some(models) = models {
+                apply_kimi_catalog(app, models);
+                super::settings::ui::refresh_open_settings_modals(app);
+            }
+            if !deepseek_credential_configured() {
+                app.show_toast(&format!(
+                    "✓ DeepSeek API key {}; API key required and queued DeepSeek prompts remain paused",
+                    if configured { "saved" } else { "cleared" },
+                ));
+                return vec![];
+            }
+            rebind_pending_deepseek_sessions(app, generation)
+        }
+        TaskResult::DeepSeekModelRebindComplete {
+            agent_id,
+            session_id,
+            model_id,
+            effort,
+            generation,
+            result,
+        } => handle_deepseek_model_rebind_complete(
             app, agent_id, session_id, model_id, effort, generation, result,
         ),
         TaskResult::OpenCodeGoModelsUpdated {

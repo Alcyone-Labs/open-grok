@@ -144,6 +144,15 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
     };
     let parent_id = matched.agent_id();
     let is_active = is_matched_agent_active(app, parent_id);
+    let pending_rebind_provider = if app.pending_fireworks_rebind_agents.contains(&parent_id) {
+        Some(crate::app::app_view::PrimaryProvider::Fireworks)
+    } else if app.pending_deepseek_rebind_agents.contains(&parent_id) {
+        Some(crate::app::app_view::PrimaryProvider::DeepSeek)
+    } else if app.pending_opencode_go_rebind_agents.contains(&parent_id) {
+        Some(crate::app::app_view::PrimaryProvider::OpenCodeGo)
+    } else {
+        Some(crate::app::app_view::PrimaryProvider::Kimi)
+    };
     let agent = app
         .agents
         .get_mut(&parent_id)
@@ -195,7 +204,7 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
     }
     let mut plugins_changed_needs_skills_refetch = false;
     let mut terminal_outcome: Option<super::super::turn_completion::TerminalApply> = None;
-    let mut cancel_pending_kimi_rebind = false;
+    let mut cancel_pending_provider_rebind = None;
     let root_session_id: &str = session_notif.session_id.0.as_ref();
     let changed = match session_notif.update {
         XaiSessionUpdate::SwarmModeChanged { enabled, trigger } => {
@@ -1008,13 +1017,15 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             reasoning_effort,
         } => {
             let new_model_id = acp::ModelId::new(model_id.clone());
-            let authoritative_non_kimi_override = agent.session.provider_rebind_pending
+            let target_provider = crate::app::app_view::PrimaryProvider::for_model(
+                &agent.session.models,
+                &new_model_id,
+            );
+            let authoritative_provider_override = agent.session.provider_rebind_pending
                 && agent.session.models.available.contains_key(&new_model_id)
-                && crate::app::app_view::PrimaryProvider::for_model(
-                    &agent.session.models,
-                    &new_model_id,
-                ) != Some(crate::app::app_view::PrimaryProvider::Kimi);
-            if agent.session.model_switch_pending && !authoritative_non_kimi_override {
+                && pending_rebind_provider
+                    .is_some_and(|provider| target_provider != Some(provider));
+            if agent.session.model_switch_pending && !authoritative_provider_override {
                 tracing::debug!(
                     session_id = session_notif.session_id.0.as_ref(),
                     model_id = %model_id,
@@ -1048,14 +1059,12 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 .models
                 .set_current(new_model_id.clone(), effort);
             agent.session.user_model_preference = Some(new_model_id.clone());
-            if crate::app::app_view::PrimaryProvider::for_model(
-                &agent.session.models,
-                &new_model_id,
-            ) != Some(crate::app::app_view::PrimaryProvider::Kimi)
-                && agent.session.provider_rebind_pending
+            if agent.session.provider_rebind_pending
+                && pending_rebind_provider
+                    .is_some_and(|provider| target_provider != Some(provider))
             {
                 agent.session.provider_rebind_pending = false;
-                cancel_pending_kimi_rebind = true;
+                cancel_pending_provider_rebind = pending_rebind_provider;
                 let drain = crate::app::dispatch::maybe_drain_queue(agent);
                 agent.pending_effects.extend(drain.effects);
             }
@@ -1216,8 +1225,24 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             tracing::warn!("PluginsChanged: agent or modal disappeared before skills re-fetch");
         }
     }
-    if cancel_pending_kimi_rebind {
-        app.pending_kimi_rebind_agents.remove(&parent_id);
+    match cancel_pending_provider_rebind {
+        Some(crate::app::app_view::PrimaryProvider::Kimi) => {
+            app.cancel_pending_kimi_rebind(parent_id);
+        }
+        Some(crate::app::app_view::PrimaryProvider::Fireworks) => {
+            app.cancel_pending_fireworks_rebind(parent_id);
+        }
+        Some(crate::app::app_view::PrimaryProvider::DeepSeek) => {
+            app.cancel_pending_deepseek_rebind(parent_id);
+        }
+        Some(crate::app::app_view::PrimaryProvider::OpenCodeGo) => {
+            app.cancel_pending_opencode_go_rebind(parent_id);
+        }
+        Some(
+            crate::app::app_view::PrimaryProvider::Xai
+            | crate::app::app_view::PrimaryProvider::Codex,
+        )
+        | None => {}
     }
     if let Some(agent) = app.agents.get_mut(&parent_id) {
         if let Some(seq) = meta.event_seq

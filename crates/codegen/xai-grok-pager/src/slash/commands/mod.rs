@@ -641,6 +641,15 @@ mod tests {
         ));
     }
     #[test]
+    fn login_deepseek_selects_secure_api_key_editor() {
+        for provider in [" deepseek ", "deep-seek", "deepseek-api"] {
+            assert!(matches!(
+                run_login(provider),
+                CommandResult::Action(Action::OpenDeepSeekApiKeyEditor)
+            ));
+        }
+    }
+    #[test]
     fn login_opencode_go_selects_secure_api_key_editor() {
         for provider in [" opencode-go ", "opencode", "opencode_go", "go"] {
             assert!(matches!(
@@ -654,6 +663,7 @@ mod tests {
         let items = login::provider_items(
             Some(crate::settings::SecretStatus::Stored),
             Some(crate::settings::SecretStatus::Missing),
+            Some(crate::settings::SecretStatus::Stored),
             Some(crate::settings::SecretStatus::EnvironmentOverride),
         );
         assert_eq!(
@@ -661,11 +671,12 @@ mod tests {
                 .iter()
                 .map(|item| item.insert_text.as_str())
                 .collect::<Vec<_>>(),
-            ["xai", "codex", "kimi", "fireworks", "opencode-go"]
+            ["xai", "codex", "kimi", "fireworks", "deepseek", "opencode-go"]
         );
         assert_eq!(items[2].description, "API key · saved");
         assert_eq!(items[3].description, "API key · not configured");
-        assert_eq!(items[4].description, "API key · environment override");
+        assert_eq!(items[4].description, "API key · saved");
+        assert_eq!(items[5].description, "API key · environment override");
     }
     #[test]
     fn logout_bare_preserves_xai_flow() {

@@ -29,6 +29,8 @@ Codex provider does not override an explicit model API key.
 | OpenAI Codex | Responses | Codex | OpenAI | yes | standard only | Codex OAuth | denied |
 | Kimi | Chat | none | client function tools | no | standard only | provider API key | denied |
 | Fireworks AI | Chat | none | client function tools | no | standard only | provider API key | denied |
+| DeepSeek direct | Chat | none | client function tools | no | standard only | provider API key | denied |
+| OpenCode Go | Chat, Messages | none | client function tools | no | standard only | provider API key | denied |
 
 The sampler's built-in `ProviderAdapter` registry applies the transport policy
 for each profile. The xAI adapter owns xAI request metadata and doom-loop
@@ -41,7 +43,11 @@ hosted-tool dialect. The Fireworks AI adapter is a plain Chat Completions
 transport: standard sampling fields pass through unchanged and no hosted-tool
 dialect is advertised. Fireworks exposes a curated model list; its `/models`
 endpoint may enrich curated entries (context window) but can neither add nor
-remove models.
+remove models. The DeepSeek adapter uses ordinary Chat Completions and strips
+Open Grok's internal per-message model attribution before transport. Its live
+catalog intersects DeepSeek's `/models` response with curated direct entries.
+OpenCode Go selects Chat Completions or Messages per model from canonical
+metadata rather than from provider identity alone.
 
 `ConversationRequest` and `ConversationResponse` remain provider neutral.
 Provider-native opaque history is retained with a typed backend item and is

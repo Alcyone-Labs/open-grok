@@ -2561,6 +2561,13 @@ impl SessionActor {
                     ));
                 }
                 SamplerTurnOutcome::RefreshAuthAndResubmit {
+                    provider: xai_grok_sampling_types::ModelProvider::DeepSeek,
+                } => {
+                    return Err(acp::Error::internal_error().data(
+                        "DeepSeek API-key authentication cannot be refreshed automatically",
+                    ));
+                }
+                SamplerTurnOutcome::RefreshAuthAndResubmit {
                     provider: xai_grok_sampling_types::ModelProvider::OpenCodeGo,
                 } => {
                     return Err(acp::Error::internal_error().data(

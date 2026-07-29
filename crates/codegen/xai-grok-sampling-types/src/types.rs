@@ -959,6 +959,8 @@ pub enum ModelProvider {
     Kimi,
     #[serde(alias = "fireworks_ai")]
     Fireworks,
+    #[serde(rename = "deepseek", alias = "deep_seek", alias = "deepseek_api")]
+    DeepSeek,
     #[serde(alias = "opencode-go", alias = "opencode_go")]
     OpenCodeGo,
 }
@@ -1183,6 +1185,24 @@ impl ProviderProfile {
         xai_services: XaiServicePolicy::Denied,
     };
 
+    /// DeepSeek's direct OpenAI-compatible inference API. DeepSeek uses
+    /// ordinary client-side function tools over Chat Completions and
+    /// authenticates with a provider-owned API key only.
+    pub const DEEPSEEK: Self = Self {
+        provider: ModelProvider::DeepSeek,
+        backends: ProviderBackends {
+            chat_completions: true,
+            responses: None,
+            messages: false,
+        },
+        code_mode_transport: CodeModeTransport::Unsupported,
+        hosted_tool_dialect: None,
+        native_web_search: false,
+        request_metadata: RequestMetadataPolicy::StandardHeadersOnly,
+        session_auth: BuiltInSessionAuthKind::ApiKeyOnly,
+        xai_services: XaiServicePolicy::Denied,
+    };
+
     /// OpenCode Go routes individual models over either OpenAI-compatible Chat
     /// Completions or Anthropic Messages while sharing one provider API key.
     pub const OPEN_CODE_GO: Self = Self {
@@ -1224,6 +1244,10 @@ impl ProviderProfile {
         self.provider.is_fireworks()
     }
 
+    pub const fn is_deepseek(self) -> bool {
+        self.provider.is_deepseek()
+    }
+
     pub const fn is_open_code_go(self) -> bool {
         self.provider.is_open_code_go()
     }
@@ -1253,6 +1277,7 @@ impl ModelProvider {
             Self::Codex => "codex",
             Self::Kimi => "kimi",
             Self::Fireworks => "fireworks",
+            Self::DeepSeek => "deepseek",
             Self::OpenCodeGo => "opencode_go",
         }
     }
@@ -1264,6 +1289,7 @@ impl ModelProvider {
             Self::Codex => "OpenAI Codex",
             Self::Kimi => "Kimi",
             Self::Fireworks => "Fireworks AI",
+            Self::DeepSeek => "DeepSeek",
             Self::OpenCodeGo => "OpenCode Go",
         }
     }
@@ -1284,6 +1310,10 @@ impl ModelProvider {
         matches!(self, Self::Fireworks)
     }
 
+    pub const fn is_deepseek(self) -> bool {
+        matches!(self, Self::DeepSeek)
+    }
+
     pub const fn is_open_code_go(self) -> bool {
         matches!(self, Self::OpenCodeGo)
     }
@@ -1295,6 +1325,7 @@ impl ModelProvider {
             Self::Codex => ProviderProfile::CODEX,
             Self::Kimi => ProviderProfile::KIMI,
             Self::Fireworks => ProviderProfile::FIREWORKS,
+            Self::DeepSeek => ProviderProfile::DEEPSEEK,
             Self::OpenCodeGo => ProviderProfile::OPEN_CODE_GO,
         }
     }
@@ -1572,6 +1603,38 @@ mod tests {
                 session_auth: BuiltInSessionAuthKind::ApiKeyOnly,
                 xai_services: XaiServicePolicy::Denied,
             },
+            Case {
+                provider: ModelProvider::DeepSeek,
+                id: "deepseek",
+                name: "DeepSeek",
+                backends: ProviderBackends {
+                    chat_completions: true,
+                    responses: None,
+                    messages: false,
+                },
+                code_mode_transport: CodeModeTransport::Unsupported,
+                hosted_tools: None,
+                native_web_search: false,
+                request_metadata: RequestMetadataPolicy::StandardHeadersOnly,
+                session_auth: BuiltInSessionAuthKind::ApiKeyOnly,
+                xai_services: XaiServicePolicy::Denied,
+            },
+            Case {
+                provider: ModelProvider::OpenCodeGo,
+                id: "opencode_go",
+                name: "OpenCode Go",
+                backends: ProviderBackends {
+                    chat_completions: true,
+                    responses: None,
+                    messages: true,
+                },
+                code_mode_transport: CodeModeTransport::Unsupported,
+                hosted_tools: None,
+                native_web_search: false,
+                request_metadata: RequestMetadataPolicy::StandardHeadersOnly,
+                session_auth: BuiltInSessionAuthKind::ApiKeyOnly,
+                xai_services: XaiServicePolicy::Denied,
+            },
         ];
 
         for case in cases {
@@ -1591,6 +1654,8 @@ mod tests {
             assert_eq!(profile.is_codex(), case.provider.is_codex());
             assert_eq!(profile.is_kimi(), case.provider.is_kimi());
             assert_eq!(profile.is_fireworks(), case.provider.is_fireworks());
+            assert_eq!(profile.is_deepseek(), case.provider.is_deepseek());
+            assert_eq!(profile.is_open_code_go(), case.provider.is_open_code_go());
             assert_eq!(profile.allows_xai_services(), case.xai_services.allows());
             for backend in [
                 ApiBackend::ChatCompletions,

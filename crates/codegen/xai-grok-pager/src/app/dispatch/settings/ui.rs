@@ -113,6 +113,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     let kimi_api_key_status = kimi_api_key_status();
     let kimi_code_api_key_status = kimi_code_api_key_status();
     let fireworks_api_key_status = fireworks_api_key_status();
+    let deepseek_api_key_status = deepseek_api_key_status();
     let opencode_go_api_key_status = opencode_go_api_key_status();
     let perplexity_api_key_status = perplexity_api_key_status();
     let kimi_api_endpoint = app.kimi_api_endpoint.clone();
@@ -153,6 +154,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 kimi_api_key_status,
                 kimi_code_api_key_status,
                 fireworks_api_key_status,
+                deepseek_api_key_status,
                 opencode_go_api_key_status,
                 opencode_go_models: app.opencode_go_models.clone(),
                 opencode_go_enabled_models: app.opencode_go_enabled_models.clone(),
@@ -289,6 +291,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
     let kimi_api_key_status = kimi_api_key_status();
     let kimi_code_api_key_status = kimi_code_api_key_status();
     let fireworks_api_key_status = fireworks_api_key_status();
+    let deepseek_api_key_status = deepseek_api_key_status();
     let opencode_go_api_key_status = opencode_go_api_key_status();
     let kimi_api_endpoint = app.kimi_api_endpoint.clone();
     if opencode_go_api_key_status != crate::settings::SecretStatus::Missing {
@@ -336,6 +339,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
         kimi_api_key_status,
         kimi_code_api_key_status,
         fireworks_api_key_status,
+        deepseek_api_key_status,
         opencode_go_api_key_status,
         opencode_go_models: app.opencode_go_models.clone(),
         opencode_go_enabled_models: app.opencode_go_enabled_models.clone(),
@@ -429,6 +433,32 @@ pub(in crate::app::dispatch) fn dispatch_open_fireworks_api_key_editor(
             target: "settings",
             "Fireworks API-key setting is missing from the registry",
         );
+        return vec![];
+    }
+    if let Some(agent) = get_visible_agent_mut(app) {
+        agent.active_modal = Some(ActiveModal::Settings {
+            state: Box::new(state),
+        });
+    } else if matches!(app.active_view, ActiveView::AgentDashboard)
+        && let Some(dashboard) = app.dashboard.as_mut()
+    {
+        dashboard.settings_modal = Some(Box::new(state));
+    }
+    vec![]
+}
+
+pub(in crate::app::dispatch) fn dispatch_open_deepseek_api_key_editor(
+    app: &mut AppView,
+) -> Vec<Effect> {
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalState;
+
+    let registry = app.settings_registry.clone();
+    let ui_snapshot = app.current_ui.clone();
+    let pager_snapshot = build_pager_snapshot(app);
+    let mut state = SettingsModalState::new(registry, ui_snapshot, pager_snapshot);
+    if !state.try_open_deepseek_provider_login() {
+        tracing::error!(target: "settings", "DeepSeek API-key setting is missing from the registry");
         return vec![];
     }
     if let Some(agent) = get_visible_agent_mut(app) {
@@ -953,6 +983,7 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         kimi_api_key_status: kimi_api_key_status(),
         kimi_code_api_key_status: kimi_code_api_key_status(),
         fireworks_api_key_status: fireworks_api_key_status(),
+        deepseek_api_key_status: deepseek_api_key_status(),
         opencode_go_api_key_status: opencode_go_api_key_status(),
         opencode_go_models: app.opencode_go_models.clone(),
         opencode_go_enabled_models: app.opencode_go_enabled_models.clone(),
@@ -985,6 +1016,19 @@ pub(in crate::app::dispatch) fn opencode_go_api_key_status() -> crate::settings:
     } else if xai_grok_shell::auth::provider_api_key_is_configured(
         &xai_grok_tools::util::grok_home::grok_home(),
         xai_grok_shell::sampling::types::ModelProvider::OpenCodeGo,
+    ) {
+        crate::settings::SecretStatus::Stored
+    } else {
+        crate::settings::SecretStatus::Missing
+    }
+}
+
+pub(in crate::app::dispatch) fn deepseek_api_key_status() -> crate::settings::SecretStatus {
+    if xai_grok_shell::deepseek_models::environment_api_key_is_configured() {
+        crate::settings::SecretStatus::EnvironmentOverride
+    } else if xai_grok_shell::auth::provider_api_key_is_configured(
+        &xai_grok_tools::util::grok_home::grok_home(),
+        xai_grok_shell::sampling::types::ModelProvider::DeepSeek,
     ) {
         crate::settings::SecretStatus::Stored
     } else {
@@ -1035,6 +1079,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
             | "toolset.web_search_source.kimi_platform"
             | "toolset.web_search_source.kimi_code"
             | "toolset.web_search_source.fireworks"
+            | "toolset.web_search_source.deepseek"
             | "toolset.web_search_source.opencode_go",
             SettingValue::Enum(choice),
         ) => Some(Action::SetWebSearchSource { key, choice }),
@@ -1274,6 +1319,10 @@ pub(in crate::app::dispatch) fn action_for_reset(
             SettingValue::SecretStatus(crate::settings::SecretStatus::Missing),
         ) => Some(Action::ClearFireworksApiKey),
         (
+            "deepseek_api_key",
+            SettingValue::SecretStatus(crate::settings::SecretStatus::Missing),
+        ) => Some(Action::ClearDeepSeekApiKey),
+        (
             "opencode_go_api_key",
             SettingValue::SecretStatus(crate::settings::SecretStatus::Missing),
         ) => Some(Action::ClearOpenCodeGoApiKey),
@@ -1316,6 +1365,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             | "toolset.web_search_source.kimi_platform"
             | "toolset.web_search_source.kimi_code"
             | "toolset.web_search_source.fireworks"
+            | "toolset.web_search_source.deepseek"
             | "toolset.web_search_source.opencode_go",
             SettingValue::Enum(_),
         )

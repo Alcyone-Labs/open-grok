@@ -75,8 +75,9 @@ use super::session::load::{
 };
 use super::session::modal::dispatch_rename_session;
 use super::settings::setters::{
-    clear_default_model, clear_fireworks_api_key, clear_fork_secondary_model, clear_kimi_api_key,
-    clear_memory_model, clear_opencode_go_api_key, clear_perplexity_api_key, clear_recap_model,
+    clear_deepseek_api_key, clear_default_model, clear_fireworks_api_key,
+    clear_fork_secondary_model, clear_kimi_api_key, clear_memory_model,
+    clear_opencode_go_api_key, clear_perplexity_api_key, clear_recap_model,
     preview_auto_dark_theme,
     preview_auto_light_theme, preview_theme, set_antigravity_skip_permissions,
     set_antigravity_subagents, set_ask_user_question_timeout_enabled, set_auto_dark_theme,
@@ -85,8 +86,9 @@ use super::settings::setters::{
     set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
     set_contextual_hint_ssh_wrap, set_contextual_hint_undo, set_contextual_hint_word_select,
     set_default_model, set_default_selected_permission, set_display_refresh_auto_cadence,
-    set_fireworks_api_key, set_fork_secondary_model, set_group_tool_verbs, set_hunk_tracker_mode,
-    set_invert_scroll, set_keep_text_selection, set_kimi_api_endpoint, set_kimi_api_key,
+    set_deepseek_api_key, set_fireworks_api_key, set_fork_secondary_model, set_group_tool_verbs,
+    set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_kimi_api_endpoint,
+    set_kimi_api_key,
     refresh_opencode_go_models, set_local_feature_flag, set_max_thoughts_width, set_memory_model,
     set_multiline_mode, set_opencode_go_api_key, set_opencode_go_enabled_models,
     set_page_flip_on_send, set_perplexity_api_key, set_perplexity_web_search,
@@ -98,7 +100,8 @@ use super::settings::setters::{
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette,
-    dispatch_open_fireworks_api_key_editor, dispatch_open_howto_guides,
+    dispatch_open_deepseek_api_key_editor, dispatch_open_fireworks_api_key_editor,
+    dispatch_open_howto_guides,
     dispatch_open_kimi_api_key_editor, dispatch_open_opencode_go_api_key_editor,
     dispatch_open_reset_confirm, dispatch_open_settings,
     dispatch_toggle_compact_mode, dispatch_toggle_mouse_capture, dispatch_toggle_multiline,
@@ -1070,6 +1073,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ClearKimiApiKey { endpoint } => clear_kimi_api_key(app, endpoint),
         Action::SetFireworksApiKey { key } => set_fireworks_api_key(app, key),
         Action::ClearFireworksApiKey => clear_fireworks_api_key(app),
+        Action::SetDeepSeekApiKey { key } => set_deepseek_api_key(app, key),
+        Action::ClearDeepSeekApiKey => clear_deepseek_api_key(app),
         Action::SetOpenCodeGoApiKey { key } => set_opencode_go_api_key(app, key),
         Action::ClearOpenCodeGoApiKey => clear_opencode_go_api_key(app),
         Action::SetOpenCodeGoEnabledModels { models } => {
@@ -1162,6 +1167,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::OpenLoginProviderPicker => dispatch_open_login_provider_picker(app),
         Action::OpenKimiApiKeyEditor => dispatch_open_kimi_api_key_editor(app),
         Action::OpenFireworksApiKeyEditor => dispatch_open_fireworks_api_key_editor(app),
+        Action::OpenDeepSeekApiKeyEditor => dispatch_open_deepseek_api_key_editor(app),
         Action::OpenOpenCodeGoApiKeyEditor => dispatch_open_opencode_go_api_key_editor(app),
         Action::Login => dispatch_login(app),
         Action::LoginCodex => dispatch_login_codex(app),

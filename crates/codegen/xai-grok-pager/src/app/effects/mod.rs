@@ -58,6 +58,11 @@ static FIREWORKS_MUTATION_QUEUE: LazyLock<KimiMutationQueue> =
     LazyLock::new(KimiMutationQueue::new);
 static NEXT_FIREWORKS_TRANSPORT_TOKEN: AtomicU64 = AtomicU64::new(0);
 static LATEST_FIREWORKS_KEY: AtomicU64 = AtomicU64::new(0);
+static DEEPSEEK_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static DEEPSEEK_MUTATION_QUEUE: LazyLock<KimiMutationQueue> =
+    LazyLock::new(KimiMutationQueue::new);
+static NEXT_DEEPSEEK_TRANSPORT_TOKEN: AtomicU64 = AtomicU64::new(0);
+static LATEST_DEEPSEEK_KEY: AtomicU64 = AtomicU64::new(0);
 static OPENCODE_GO_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static OPENCODE_GO_MUTATION_QUEUE: LazyLock<KimiMutationQueue> =
     LazyLock::new(KimiMutationQueue::new);
@@ -396,6 +401,12 @@ fn next_fireworks_transport_token() -> u64 {
         .wrapping_add(1)
 }
 
+fn next_deepseek_transport_token() -> u64 {
+    NEXT_DEEPSEEK_TRANSPORT_TOKEN
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1)
+}
+
 /// Ask the shell to live-apply the Fireworks AI credential change and rebuild
 /// its isolated model partition. Credential material never crosses ACP.
 struct FireworksModelsApply {
@@ -427,6 +438,37 @@ async fn apply_fireworks_models(tx: &AcpAgentTx) -> Result<FireworksModelsApply,
         .transpose()
         .map_err(|error| format!("Fireworks models apply returned an invalid catalog: {error}"))?;
     Ok(FireworksModelsApply { warning, models })
+}
+
+struct DeepSeekModelsApply {
+    warning: Option<String>,
+    models: Option<acp::SessionModelState>,
+}
+
+async fn apply_deepseek_models(tx: &AcpAgentTx) -> Result<DeepSeekModelsApply, String> {
+    let request = acp::ExtRequest::new(
+        "open-grok/deepseek/models/apply",
+        serde_json::value::to_raw_value(&serde_json::json!({}))
+            .expect("serialize DeepSeek models apply params")
+            .into(),
+    );
+    let response = acp_send(request, tx)
+        .await
+        .map_err(|error| sanitize_user_error(&format!("{error}")))?;
+    let envelope: serde_json::Value = serde_json::from_str(response.0.get())
+        .map_err(|error| format!("DeepSeek models apply returned invalid JSON: {error}"))?;
+    let result = envelope.get("result").unwrap_or(&envelope);
+    let warning = result
+        .get("warning")
+        .and_then(serde_json::Value::as_str)
+        .map(sanitize_user_error);
+    let models = result
+        .get("models")
+        .cloned()
+        .map(serde_json::from_value::<acp::SessionModelState>)
+        .transpose()
+        .map_err(|error| format!("DeepSeek models apply returned an invalid catalog: {error}"))?;
+    Ok(DeepSeekModelsApply { warning, models })
 }
 
 struct OpenCodeGoModelsApply {
@@ -603,6 +645,76 @@ pub(crate) fn execute(
                         generation,
                         stale: !is_latest_kimi_transport_token(
                             &LATEST_FIREWORKS_KEY,
+                            transport_token,
+                        ),
+                        warning: Some(warning),
+                        error: None,
+                        models: None,
+                    },
+                }
+            });
+        }
+        Effect::UpdateDeepSeekApiKey { generation, key } => {
+            let transport_token = next_deepseek_transport_token();
+            publish_kimi_transport_token(&LATEST_DEEPSEEK_KEY, transport_token);
+            let mut mutation_ticket = DEEPSEEK_MUTATION_QUEUE.enqueue();
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                mutation_ticket.wait_turn().await;
+                let configured = key.is_some();
+                let _guard = DEEPSEEK_MUTATION_LOCK.lock().await;
+                if !is_latest_kimi_transport_token(&LATEST_DEEPSEEK_KEY, transport_token) {
+                    return TaskResult::DeepSeekApiKeyUpdated {
+                        configured,
+                        generation,
+                        stale: true,
+                        warning: None,
+                        error: None,
+                        models: None,
+                    };
+                }
+                let grok_home = xai_grok_tools::util::grok_home::grok_home();
+                let storage_result = match key.as_ref() {
+                    Some(secret) => xai_grok_shell::auth::store_provider_api_key(
+                        &grok_home,
+                        xai_grok_shell::sampling::types::ModelProvider::DeepSeek,
+                        secret.expose(),
+                    ),
+                    None => xai_grok_shell::auth::clear_provider_api_key(
+                        &grok_home,
+                        xai_grok_shell::sampling::types::ModelProvider::DeepSeek,
+                    ),
+                };
+                if let Err(error) = storage_result {
+                    return TaskResult::DeepSeekApiKeyUpdated {
+                        configured,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_DEEPSEEK_KEY,
+                            transport_token,
+                        ),
+                        warning: None,
+                        error: Some(sanitize_user_error(&error.to_string())),
+                        models: None,
+                    };
+                }
+                match apply_deepseek_models(&tx).await {
+                    Ok(applied) => TaskResult::DeepSeekApiKeyUpdated {
+                        configured,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_DEEPSEEK_KEY,
+                            transport_token,
+                        ),
+                        warning: applied.warning,
+                        error: None,
+                        models: applied.models,
+                    },
+                    Err(warning) => TaskResult::DeepSeekApiKeyUpdated {
+                        configured,
+                        generation,
+                        stale: !is_latest_kimi_transport_token(
+                            &LATEST_DEEPSEEK_KEY,
                             transport_token,
                         ),
                         warning: Some(warning),
@@ -3181,6 +3293,52 @@ pub(crate) fn execute(
                         }
                     });
                 TaskResult::FireworksModelRebindComplete {
+                    agent_id,
+                    session_id,
+                    model_id,
+                    effort,
+                    generation,
+                    result,
+                }
+            });
+        }
+        Effect::RebindDeepSeekModel {
+            agent_id,
+            session_id,
+            model_id,
+            effort,
+            generation,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let meta = effort.map(|eff| {
+                    use xai_grok_shell::sampling::types::{
+                        REASONING_EFFORT_META_KEY, reasoning_effort_meta_value,
+                    };
+                    let mut metadata = acp::Meta::new();
+                    metadata.insert(
+                        REASONING_EFFORT_META_KEY.to_string(),
+                        reasoning_effort_meta_value(eff),
+                    );
+                    metadata
+                });
+                let request = acp::SetSessionModelRequest::new(
+                    session_id.clone(),
+                    model_id.clone(),
+                )
+                .meta(meta);
+                let result = acp_send(request, &tx).await.map(|_| ()).map_err(|error| {
+                    use xai_grok_shell::agent::config::ModelSwitchIncompatibleAgentError;
+                    if let Some(typed) = ModelSwitchIncompatibleAgentError::from_acp_error(&error) {
+                        SwitchModelError::IncompatibleAgent {
+                            error: typed,
+                            prev_model_id: None,
+                        }
+                    } else {
+                        SwitchModelError::Other(sanitize_user_error(&error.to_string()))
+                    }
+                });
+                TaskResult::DeepSeekModelRebindComplete {
                     agent_id,
                     session_id,
                     model_id,

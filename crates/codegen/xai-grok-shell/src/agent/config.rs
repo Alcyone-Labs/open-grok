@@ -3708,7 +3708,7 @@ pub fn resolve_model_list(
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
     resolve_model_list_with_provider_catalogs(
-        cfg, prefetched, None, false, None, false, None, false, None, false,
+        cfg, prefetched, None, false, None, false, None, false, None, false, None, false,
     )
 }
 
@@ -3737,6 +3737,8 @@ pub fn resolve_model_list_with_codex(
         false,
         None,
         false,
+        None,
+        false,
     )
 }
 
@@ -3752,6 +3754,8 @@ pub fn resolve_model_list_with_provider_catalogs(
     kimi_authoritative: bool,
     fireworks_remote: Option<IndexMap<String, ModelEntry>>,
     fireworks_authoritative: bool,
+    deepseek_remote: Option<IndexMap<String, ModelEntry>>,
+    deepseek_authoritative: bool,
     opencode_go_remote: Option<IndexMap<String, ModelEntry>>,
     opencode_go_authoritative: bool,
 ) -> IndexMap<String, ModelEntry> {
@@ -3871,6 +3875,13 @@ pub fn resolve_model_list_with_provider_catalogs(
         fireworks_remote,
         ModelProvider::Fireworks,
         fireworks_authoritative,
+    );
+    merge_remote_provider_partition(
+        &mut resolved,
+        &defaults,
+        deepseek_remote,
+        ModelProvider::DeepSeek,
+        deepseek_authoritative,
     );
     merge_remote_provider_partition(
         &mut resolved,
@@ -4197,6 +4208,12 @@ fn default_models(
                 m.base_url = Some(crate::fireworks_models::api_base_url());
                 m.env_key = Some(EnvKeys::single(
                     crate::fireworks_models::FIREWORKS_API_KEY_ENV,
+                ));
+            }
+            if m.provider == ModelProvider::DeepSeek {
+                m.base_url = Some(crate::deepseek_models::api_base_url());
+                m.env_key = Some(EnvKeys::single(
+                    crate::deepseek_models::DEEPSEEK_API_KEY_ENV,
                 ));
             }
             let key = m.id.clone().unwrap_or_else(|| m.model.clone());
@@ -4537,6 +4554,7 @@ impl ConfigModelOverride {
                 ModelProvider::Xai
                 | ModelProvider::Kimi
                 | ModelProvider::Fireworks
+                | ModelProvider::DeepSeek
                 | ModelProvider::OpenCodeGo => ApiBackend::ChatCompletions,
             };
             if self.base_url.is_none() {
@@ -5407,6 +5425,8 @@ fn trusted_built_in_session_endpoint(provider: ModelProvider, base_url: &str) ->
             (provider.is_kimi() && crate::kimi_models::is_trusted_api_base_url(base_url))
                 || (provider.is_fireworks()
                     && crate::fireworks_models::is_trusted_api_base_url(base_url))
+                || (provider.is_deepseek()
+                    && crate::deepseek_models::is_trusted_api_base_url(base_url))
                 || (provider.is_open_code_go()
                     && crate::opencode_go_models::is_trusted_api_base_url(base_url))
         }
@@ -13924,6 +13944,8 @@ default = "grok-4.5"
             true,
             None,
             false,
+            None,
+            false,
         );
         assert!(resolved.contains_key("grok-4.5"));
         assert!(resolved.contains_key("kimi-k3"));
@@ -14199,6 +14221,8 @@ default = "grok-4.5"
             false,
             None,
             false,
+            None,
+            false,
         );
         assert!(resolved.contains_key("grok-live"));
         assert!(resolved.contains_key("gpt-5.6-sol"));
@@ -14224,6 +14248,8 @@ default = "grok-4.5"
             false,
             Some(kimi),
             true,
+            None,
+            false,
             None,
             false,
             None,

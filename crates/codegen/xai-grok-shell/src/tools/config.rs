@@ -359,6 +359,7 @@ pub enum WebSearchSourceTarget {
     KimiPlatform,
     KimiCode,
     Fireworks,
+    DeepSeek,
     OpenCodeGo,
 }
 
@@ -377,6 +378,7 @@ impl WebSearchSourceTarget {
                 crate::kimi_models::KimiApiEndpoint::Code => Self::KimiCode,
             },
             ModelProvider::Fireworks => Self::Fireworks,
+            ModelProvider::DeepSeek => Self::DeepSeek,
             ModelProvider::OpenCodeGo => Self::OpenCodeGo,
         }
     }
@@ -393,6 +395,7 @@ pub struct WebSearchSourceConfig {
     pub kimi_platform: Option<WebSearchSource>,
     pub kimi_code: Option<WebSearchSource>,
     pub fireworks: Option<WebSearchSource>,
+    pub deepseek: Option<WebSearchSource>,
     pub opencode_go: Option<WebSearchSource>,
 }
 
@@ -405,6 +408,7 @@ impl WebSearchSourceConfig {
             WebSearchSourceTarget::KimiPlatform => self.kimi_platform,
             WebSearchSourceTarget::KimiCode => self.kimi_code,
             WebSearchSourceTarget::Fireworks => self.fireworks,
+            WebSearchSourceTarget::DeepSeek => self.deepseek,
             WebSearchSourceTarget::OpenCodeGo => self.opencode_go,
         }
     }
@@ -418,6 +422,7 @@ impl WebSearchSourceConfig {
             | WebSearchSourceTarget::KimiPlatform
             | WebSearchSourceTarget::KimiCode
             | WebSearchSourceTarget::Fireworks
+            | WebSearchSourceTarget::DeepSeek
             | WebSearchSourceTarget::OpenCodeGo => WebSearchSource::Xai,
         }
     }
@@ -436,6 +441,7 @@ impl WebSearchSourceConfig {
             WebSearchSourceTarget::KimiPlatform => self.kimi_platform = source,
             WebSearchSourceTarget::KimiCode => self.kimi_code = source,
             WebSearchSourceTarget::Fireworks => self.fireworks = source,
+            WebSearchSourceTarget::DeepSeek => self.deepseek = source,
             WebSearchSourceTarget::OpenCodeGo => self.opencode_go = source,
         }
     }
@@ -523,6 +529,7 @@ impl WebSearchCandidates {
             // requires an explicit Perplexity selection.
             WebSearchSourceTarget::Xai
             | WebSearchSourceTarget::Fireworks
+            | WebSearchSourceTarget::DeepSeek
             | WebSearchSourceTarget::OpenCodeGo => WebSearchSource::Xai,
         }
     }
@@ -551,6 +558,7 @@ impl WebSearchCandidates {
                 ModelProvider::Codex
                 | ModelProvider::Kimi
                 | ModelProvider::Fireworks
+                | ModelProvider::DeepSeek
                 | ModelProvider::OpenCodeGo => WebSearchConfig::Disabled,
                 // For xAI, "native" and the xAI client tool are the same
                 // service — keep the client declaration as today.

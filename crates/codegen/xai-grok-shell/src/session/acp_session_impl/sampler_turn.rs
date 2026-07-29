@@ -1382,6 +1382,13 @@ impl SessionActor {
                     );
                     false
                 }
+                xai_grok_sampling_types::ModelProvider::DeepSeek => {
+                    tracing::warn!(
+                        session_id = %self.session_info.id.0,
+                        "DeepSeek API-key authentication cannot be refreshed; surfacing 401",
+                    );
+                    false
+                }
                 xai_grok_sampling_types::ModelProvider::OpenCodeGo => {
                     tracing::warn!(
                         session_id = %self.session_info.id.0,

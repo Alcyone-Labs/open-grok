@@ -21,6 +21,7 @@ pub mod cli_models;
 pub mod codex_auth;
 pub(crate) mod codex_models;
 pub mod config;
+pub mod deepseek_models;
 pub mod fireworks_models;
 pub mod kimi_models;
 pub mod opencode_go_models;
