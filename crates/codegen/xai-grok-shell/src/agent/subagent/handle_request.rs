@@ -66,6 +66,59 @@ pub(super) fn task_model_override_error(
         has_codex_session,
     )
 }
+fn apply_resolved_child_tool_policy(
+    definition: &mut xai_grok_agent::config::AgentDefinition,
+    capability_mode: Option<xai_tool_types::SubagentCapabilityMode>,
+    child_depth: u32,
+    max_depth: u32,
+    is_workflow: bool,
+    subagent_id: &str,
+) {
+    let tools_before_policy = definition.tool_config.tools.len();
+    let allow_nested_subagents = child_depth < max_depth;
+    xai_grok_subagent_resolution::apply_child_tool_policy(
+        definition,
+        capability_mode,
+        allow_nested_subagents,
+    );
+    if let Some(mode) = capability_mode {
+        tracing::info!(
+            subagent_id,
+            capability_mode = ?mode,
+            tools_remaining = definition.tool_config.tools.len(),
+            "Applied capability mode filter to agent tool config"
+        );
+    }
+    // Children must never drive the plan-mode lifecycle because the approval
+    // would render on the parent agent's view as if the parent presented it.
+    let before_plan_strip = definition.tool_config.tools.len();
+    strip_plan_mode_tools(&mut definition.tool_config);
+    if definition.tool_config.tools.len() < before_plan_strip {
+        tracing::info!(
+            subagent_id,
+            "Stripped plan-mode tools from subagent tool config"
+        );
+    }
+    if !allow_nested_subagents {
+        // Strip the full nested-spawn surface, not only the single-agent tool.
+        strip_nested_spawn_tools(&mut definition.tool_config);
+        if definition.tool_config.tools.len() < tools_before_policy {
+            tracing::info!(
+                subagent_id,
+                child_depth,
+                "Stripped task, agent_swarm, and workflow tools from child at max depth"
+            );
+        }
+    }
+    if is_workflow {
+        definition.tool_config.tools.retain(|tool| {
+            !matches!(
+                tool.id.rsplit(':').next(),
+                Some("scheduler_create" | "scheduler_list" | "scheduler_delete")
+            )
+        });
+    }
+}
 /// Runtime adapter for one shell child. Shared lifecycle state is owned by the
 /// `xai-grok-tools` coordinator actor and reached only through `reporter`.
 #[tracing::instrument(
@@ -469,47 +522,14 @@ pub(crate) async fn run_shell_child(
         .runtime_overrides
         .spawn_depth
         .unwrap_or(ctx.parent_depth + 1);
-    let tools_before_policy = definition.tool_config.tools.len();
-    let allow_nested_subagents = child_depth < ctx.subagents_max_depth;
-    xai_grok_subagent_resolution::apply_child_tool_policy(
+    apply_resolved_child_tool_policy(
         &mut definition,
         effective_runtime.capability_mode,
-        allow_nested_subagents,
+        child_depth,
+        ctx.subagents_max_depth,
+        request.owner.is_workflow(),
+        &request.id,
     );
-    if let Some(mode) = effective_runtime.capability_mode {
-        tracing::info!(
-            subagent_id = %request.id,
-            capability_mode = ?mode,
-            tools_remaining = definition.tool_config.tools.len(),
-            "Applied capability mode filter to agent tool config"
-        );
-    }
-    {
-        // Regardless of capability mode: children must never drive the
-        // plan-mode lifecycle — their exit_plan_mode approval renders on the
-        // parent agent's view as if the parent presented a plan.
-        let before = definition.tool_config.tools.len();
-        strip_plan_mode_tools(&mut definition.tool_config);
-        if definition.tool_config.tools.len() < before {
-            tracing::info!(
-                subagent_id = %request.id,
-                "Stripped plan-mode tools from subagent tool config"
-            );
-        }
-    }
-    if !allow_nested_subagents {
-        // Fork delta: strip the FULL nested-spawn surface (task, agent_swarm,
-        // workflow) — the broader superset of upstream's task-only strip — so
-        // children never see any spawn tool.
-        strip_nested_spawn_tools(&mut definition.tool_config);
-        if definition.tool_config.tools.len() < tools_before_policy {
-            tracing::info!(
-                subagent_id = %request.id,
-                child_depth,
-                "Stripped task, agent_swarm, and workflow tools from child at max depth"
-            );
-        }
-    }
     // ── Antigravity dispatch ────────────────────────────────────────────
     // `antigravity:*` models run out-of-process via the Antigravity CLI:
     // no child session, no SamplingClient. A resumed antigravity source
@@ -546,14 +566,6 @@ pub(crate) async fn run_shell_child(
             completion_data,
         )
         .await;
-    }
-    if request.owner.is_workflow() {
-        definition.tool_config.tools.retain(|tool| {
-            !matches!(
-                tool.id.rsplit(':').next(),
-                Some("scheduler_create" | "scheduler_list" | "scheduler_delete")
-            )
-        });
     }
     if request.fork_context {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
@@ -605,6 +617,36 @@ pub(crate) async fn run_shell_child(
                 source.subagent_id,
             );
             return child_run_output(failure_result(&request, &msg), completion_data, None);
+        }
+    }
+    if request.runtime_overrides.harness_agent_type.is_none()
+        && let Some(model_agent_type) = crate::agent::config::find_model_by_id(
+            &ctx.available_models,
+            effective_model_id.0.as_ref(),
+        )
+        .map(|entry| entry.info().agent_type.as_str())
+    {
+        match rebind_builtin_subagent_to_strict_harness(&mut definition, model_agent_type, &ctx) {
+            Ok(true) => {
+                tracing::info!(
+                    subagent_id = %request.id,
+                    model = %effective_model_id.0,
+                    harness_agent_type = model_agent_type,
+                    "Rebound built-in subagent to effective model's strict harness"
+                );
+                apply_resolved_child_tool_policy(
+                    &mut definition,
+                    effective_runtime.capability_mode,
+                    child_depth,
+                    ctx.subagents_max_depth,
+                    request.owner.is_workflow(),
+                    &request.id,
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return child_run_output(failure_result(&request, &error), completion_data, None);
+            }
         }
     }
     if let Some(raw) = effective_runtime.reasoning_effort.as_deref()

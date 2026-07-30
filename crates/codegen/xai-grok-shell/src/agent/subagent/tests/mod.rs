@@ -1826,6 +1826,65 @@ fn subagent_keeps_default_flavor_when_parent_model_is_non_strict() {
             "a non-strict parent model must leave subagents on the default harness",
         );
 }
+#[test]
+fn codex_model_rebinds_general_purpose_to_apply_patch() {
+    let ctx = ctx_with_toggle(HashMap::new());
+    let mut definition = resolve_agent_definition("general-purpose", &ctx).expect("resolves");
+    assert!(
+        definition
+            .tool_config
+            .tools
+            .iter()
+            .any(|tool| tool.id == "GrokBuild:search_replace")
+    );
+
+    assert!(
+        rebind_builtin_subagent_to_strict_harness(&mut definition, "codex", &ctx)
+            .expect("codex harness resolves")
+    );
+
+    let tool_ids: Vec<&str> = definition
+        .tool_config
+        .tools
+        .iter()
+        .map(|tool| tool.id.as_str())
+        .collect();
+    assert!(tool_ids.contains(&"Codex:apply_patch"), "{tool_ids:?}");
+    assert!(!tool_ids.contains(&"GrokBuild:search_replace"), "{tool_ids:?}");
+    assert!(matches!(
+        definition.system_prompt,
+        xai_grok_agent::prompt::context::TemplateOverride::Codex
+    ));
+}
+#[test]
+fn codex_model_rebind_preserves_explore_read_only_shape() {
+    let ctx = ctx_with_toggle(HashMap::new());
+    let mut definition = resolve_agent_definition("explore", &ctx).expect("resolves");
+
+    assert!(
+        rebind_builtin_subagent_to_strict_harness(&mut definition, "codex", &ctx)
+            .expect("codex harness resolves")
+    );
+
+    let tool_ids: Vec<&str> = definition
+        .tool_config
+        .tools
+        .iter()
+        .map(|tool| tool.id.as_str())
+        .collect();
+    assert!(tool_ids.contains(&"Codex:read_file"), "{tool_ids:?}");
+    assert!(tool_ids.contains(&"Codex:grep_files"), "{tool_ids:?}");
+    assert!(!tool_ids.contains(&"Codex:list_dir"), "{tool_ids:?}");
+    assert!(!tool_ids.contains(&"Codex:apply_patch"), "{tool_ids:?}");
+    assert!(
+        definition
+            .tool_config
+            .tools
+            .iter()
+            .all(|tool| tool.kind != Some(ToolKind::Execute)),
+        "{tool_ids:?}"
+    );
+}
 fn test_gcs_context(ctx: &SubagentSpawnContext) -> GcsUploadContext {
     GcsUploadContext {
         bucket_url: None,

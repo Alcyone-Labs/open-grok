@@ -1832,6 +1832,85 @@ fn resolve_subagent_toolset(
         &resolution_context,
         definition,
     );
+    if let Some(harness_agent_type) = harness_agent_type {
+        let _ = rebind_builtin_subagent_to_strict_harness(definition, harness_agent_type, ctx);
+    }
+}
+/// Rebind a built-in subagent role to the strict harness required by its
+/// effective model while preserving the role's capability shape.
+///
+/// Model overrides select a new provider/model route after the subagent role
+/// has already been resolved. Strict harnesses such as `codex` are not wire
+/// compatible with the stock Grok Build role definition: they require their
+/// own prompt and file-tool family (`apply_patch`, Codex read/list/grep). The
+/// role identity remains intact, while the strict harness prompt and toolset
+/// replace the incompatible contract. Tools are filtered to the kinds the role
+/// originally exposed so `explore` and `plan` do not gain write or execute
+/// access.
+fn rebind_builtin_subagent_to_strict_harness(
+    definition: &mut xai_grok_agent::config::AgentDefinition,
+    harness_agent_type: &str,
+    ctx: &SubagentSpawnContext,
+) -> Result<bool, String> {
+    if !matches!(
+        definition.scope,
+        xai_grok_agent::config::AgentScope::BuiltIn
+    ) || !matches!(
+        definition.name.as_str(),
+        "general-purpose" | "explore" | "plan"
+    ) {
+        return Ok(false);
+    }
+    if !xai_grok_agent::config::is_strict_harness_agent_type(harness_agent_type) {
+        return Ok(false);
+    }
+    let harness = resolve_agent_definition(harness_agent_type, ctx).ok_or_else(|| {
+        format!(
+            "model requires strict harness '{harness_agent_type}', but that harness is unavailable"
+        )
+    })?;
+    if !harness.is_strict_harness() {
+        return Err(format!(
+            "model requires strict harness '{harness_agent_type}', but the resolved definition is not strict"
+        ));
+    }
+
+    let allowed_kinds: Vec<ToolKind> = definition
+        .tool_config
+        .tools
+        .iter()
+        .filter_map(|tool| tool.kind)
+        .collect();
+    let original_untyped_tools: Vec<_> = definition
+        .tool_config
+        .tools
+        .iter()
+        .filter(|tool| tool.kind.is_none())
+        .cloned()
+        .collect();
+    let mut tool_config = harness.tool_config;
+    tool_config
+        .tools
+        .retain(|tool| tool.kind.is_some_and(|kind| allowed_kinds.contains(&kind)));
+    for tool in original_untyped_tools {
+        if !tool_config
+            .tools
+            .iter()
+            .any(|candidate| candidate.id == tool.id)
+        {
+            tool_config.tools.push(tool);
+        }
+    }
+
+    definition.prompt_mode = harness.prompt_mode;
+    definition.tool_config = tool_config;
+    definition.inject_default_tools = harness.inject_default_tools;
+    definition.tools = harness.tools;
+    definition.disallowed_tools = harness.disallowed_tools;
+    definition.tool_overrides = harness.tool_overrides;
+    definition.system_prompt = harness.system_prompt;
+    definition.user_message_template = harness.user_message_template;
+    Ok(true)
 }
 /// Map a resolved `ToolServerConfig` into a [`SubagentTypeSummary`].
 ///
