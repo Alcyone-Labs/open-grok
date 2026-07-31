@@ -152,6 +152,8 @@ The main agent calls the `spawn_subagent` tool. Its parameters:
 | `isolation`       | `none` (shared workspace, the default) or `worktree` (isolated git worktree). |
 | `resume_from`     | Continue a completed subagent's conversation. Pass its subagent ID. |
 | `cwd`             | Working directory for the subagent. Mutually exclusive with `isolation: worktree`; ignored when `resume_from` is set (the resumed child inherits its source's directory). |
+| `model`           | Optional model slug. Omit it to inherit the parent model; resumed agents keep their source model. |
+| `reasoning_effort` | Optional effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. Omit it to use role/persona defaults and then the parent session. It may be supplied when resuming. |
 
 When you run a subagent in the background, retrieve its result later with `get_command_or_subagent_output`.
 
@@ -185,6 +187,8 @@ The model-facing `agent_swarm` tool supports:
 | --- | --- |
 | `description` | Shared short label for the swarm. |
 | `subagent_type` | Type for new members; defaults to `general-purpose`. |
+| `model` | Optional model slug for new members. Resumed members keep their original model. |
+| `reasoning_effort` | Optional effort applied to every new or resumed member. |
 | `items` | Ordered work items. At least two are required unless resuming; total members are capped at 128. |
 | `prompt_template` | Required with `items`; must contain literal `{{item}}`. |
 | `resume_agent_ids` | Ordered object mapping completed subagent IDs to continuation prompts. Resumed members run first and keep their original profile. |
@@ -225,7 +229,7 @@ Key host functions:
 
 | Function | Behavior |
 | --- | --- |
-| `agent(prompt, opts?)` | Spawns a subagent and returns `#{agent_id, success, output, cancelled, tokens_used, duration_ms}`. `opts`: `label`, `phase`, `model`, `agent_type`, `capability_mode` (`"read-only"`/`"read-write"`/`"execute"`/`"all"`), `isolation_worktree`, `resume_from`, `output_schema` (JSON-Schema contract enforced host-side with one corrective retry). |
+| `agent(prompt, opts?)` | Spawns a subagent and returns `#{agent_id, success, output, cancelled, tokens_used, duration_ms}`. `opts`: `label`, `phase`, `model`, `reasoning_effort`, `agent_type`, `capability_mode` (`"read-only"`/`"read-write"`/`"execute"`/`"all"`), `isolation_worktree`, `resume_from`, `output_schema` (JSON-Schema contract enforced host-side with one corrective retry). |
 | `parallel([opts, ...])` | Runs many agent specs concurrently; order-preserving, failures become `()`. |
 | `phase(title)` / `log(msg)` | Progress grouping and narration in the workflow card and `/workflows` overlay. |
 | `complete(value?)` / `pause(kind, msg)` / `await_user(kind, msg)` | Terminate the run, pause it, or pause once for user input (resume passes through). |

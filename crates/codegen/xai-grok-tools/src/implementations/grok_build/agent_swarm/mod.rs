@@ -241,7 +241,8 @@ impl crate::types::tool_metadata::ToolMetadata for AgentSwarmTool {
             "{{item}}; expanded prompts must be distinct; and total members are capped at 128. ",
             "Pass model to run every new member on a specific available model slug (resumed ",
             "members keep their prior model); if the slug is rejected, report the error instead ",
-            "of re-running the swarm on a different model. ",
+            "of re-running the swarm on a different model. Pass reasoning_effort to select one ",
+            "canonical effort for every new or resumed member. ",
             "Results return together in input slot order as agent_swarm_result XML with resume ",
             "hints for unfinished members. agent_swarm must be the only tool call in the model ",
             "response. Keep the tree flat: swarm members cannot launch further task or ",
@@ -367,6 +368,9 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
         // here, not spawn members that die at setup and silently inherit the
         // parent model.
         let member_model = xai_tool_types::sanitize_optional_arg(input.model);
+        let reasoning_effort =
+            xai_tool_types::normalize_subagent_reasoning_effort(input.reasoning_effort)
+                .map_err(xai_tool_runtime::ToolError::invalid_arguments)?;
         if let Some(ref requested) = member_model {
             let validator = model_validator.ok_or_else(|| {
                 xai_tool_runtime::ToolError::custom(
@@ -389,6 +393,7 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
                 parent_session_id,
                 parent_prompt_id,
                 model: member_model,
+                reasoning_effort,
             },
             concurrency_cap,
             timeout,
@@ -408,6 +413,8 @@ struct SwarmRequestContext {
     /// Model override applied to every new member; resumed members keep
     /// their prior model (the resume path pins it).
     model: Option<String>,
+    /// Effort override applied to every member, including resumed continuations.
+    reasoning_effort: Option<String>,
 }
 
 fn validate_and_plan(input: &AgentSwarmToolInput) -> Result<Vec<PlannedMember>, String> {
@@ -710,7 +717,7 @@ fn build_member_request(
                 .then(|| context.model.clone())
                 .flatten(),
             model_override_provenance: ModelOverrideProvenance::Tool,
-            reasoning_effort: None,
+            reasoning_effort: context.reasoning_effort,
             persona: None,
             capability_mode: None,
             isolation: None,
@@ -899,6 +906,7 @@ mod tests {
             description: "work".into(),
             subagent_type: "general-purpose".into(),
             model: None,
+            reasoning_effort: None,
             prompt_template: template.map(str::to_string),
             items: items.map(|items| items.into_iter().map(str::to_string).collect()),
             resume_agent_ids: resumes.map(|entries| {
@@ -918,6 +926,7 @@ mod tests {
             parent_session_id: "parent".to_string(),
             parent_prompt_id: Some("turn".to_string()),
             model: None,
+            reasoning_effort: None,
         }
     }
 
@@ -964,6 +973,16 @@ mod tests {
     }
 
     #[test]
+    fn agent_swarm_schema_includes_reasoning_effort() {
+        let schema = serde_json::to_value(schemars::schema_for!(AgentSwarmToolInput)).unwrap();
+        assert!(
+            schema["properties"]["reasoning_effort"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("including resumed members"))
+        );
+    }
+
+    #[test]
     fn positive_cap_parser_rejects_invalid_nonempty_values() {
         assert_eq!(parse_positive_value("CAP", "3").unwrap(), Some(3));
         assert_eq!(parse_positive_value("CAP", " ").unwrap(), None);
@@ -1006,6 +1025,7 @@ mod tests {
         assert!(description.contains("capped at 128"));
         assert!(description.contains("only tool call"));
         assert!(description.contains("Keep the tree flat"));
+        assert!(description.contains("reasoning_effort"));
     }
 
     #[test]
@@ -1094,6 +1114,36 @@ mod tests {
             resumed_member.runtime_overrides.model.is_none(),
             "resumed members keep their prior model"
         );
+    }
+
+    #[test]
+    fn reasoning_effort_override_applies_to_new_and_resumed_members() {
+        let context = SwarmRequestContext {
+            reasoning_effort: Some("ultra".to_string()),
+            ..context()
+        };
+        for (index, resume_from, mode) in [
+            (0, None, MemberMode::New),
+            (1, Some("resume".to_string()), MemberMode::Resume),
+        ] {
+            let request = build_member_request(
+                PlannedMember {
+                    index,
+                    item: None,
+                    prompt: "prompt".to_string(),
+                    resume_from,
+                    mode,
+                },
+                context.clone(),
+                2,
+                format!("child-{index}"),
+                None,
+            );
+            assert_eq!(
+                request.runtime_overrides.reasoning_effort.as_deref(),
+                Some("ultra")
+            );
+        }
     }
 
     #[test]

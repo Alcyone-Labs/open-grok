@@ -252,6 +252,9 @@ impl xai_tool_runtime::Tool for TaskTool {
         } else {
             model
         };
+        let reasoning_effort =
+            xai_tool_types::normalize_subagent_reasoning_effort(input.reasoning_effort)
+                .map_err(xai_tool_runtime::ToolError::invalid_arguments)?;
 
         // Treat blank/empty/"null" cwd as absent (models sometimes emit these).
         // Also strip stray surrounding quote characters and expand `~`.
@@ -387,7 +390,7 @@ impl xai_tool_runtime::Tool for TaskTool {
             runtime_overrides: SubagentRuntimeOverrides {
                 model,
                 model_override_provenance: ModelOverrideProvenance::Tool,
-                reasoning_effort: None,
+                reasoning_effort,
                 persona: None,
                 capability_mode: input.capability_mode,
                 isolation: input.isolation,
@@ -656,6 +659,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -689,6 +693,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -723,6 +728,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -754,6 +760,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -812,6 +819,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -868,6 +876,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -928,6 +937,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -991,6 +1001,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -1035,6 +1046,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -1134,6 +1146,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            reasoning_effort: None,
             task_id: None,
         }
     }
@@ -1476,7 +1489,7 @@ mod tests {
     }
 
     #[test]
-    fn task_tool_input_schema_includes_model() {
+    fn task_tool_input_schema_includes_model_and_reasoning_effort() {
         let schema = serde_json::to_value(schemars::schema_for!(TaskToolInput)).unwrap();
         assert_eq!(
             schema["properties"]["model"]["description"],
@@ -1488,6 +1501,11 @@ mod tests {
              capabilities); otherwise omit it. Do not pass if resume_from is set (the prior \
              model will be used). If the slug is rejected, surface the error to the user \
              instead of silently substituting a different model."
+        );
+        assert!(
+            schema["properties"]["reasoning_effort"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("none, minimal, low, medium"))
         );
     }
 
@@ -1512,6 +1530,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: Some("test-model".into()),
+            reasoning_effort: Some("high".into()),
             task_id: Some("task-123".into()),
         };
         let json = serde_json::to_string(&input).unwrap();
@@ -1522,6 +1541,7 @@ mod tests {
             Some(SubagentCapabilityMode::ReadOnly)
         );
         assert_eq!(parsed.model.as_deref(), Some("test-model"));
+        assert_eq!(parsed.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
@@ -1782,6 +1802,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            reasoning_effort: None,
             task_id: None,
         })
         .unwrap();
@@ -1831,6 +1852,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -1867,6 +1889,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            reasoning_effort: None,
             task_id: None,
         };
         let json = serde_json::to_string(&input).unwrap();
@@ -1913,6 +1936,7 @@ mod tests {
                 resume_from: Some("prev-id".into()),
                 cwd: None,
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -1979,6 +2003,7 @@ mod tests {
                     resume_from: Some(sentinel.into()),
                     cwd: None,
                     model: None,
+                    reasoning_effort: None,
                     task_id: None,
                 },
             )
@@ -2025,6 +2050,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            reasoning_effort: None,
             task_id: None,
         };
         let json = serde_json::to_string(&input).unwrap();
@@ -2053,6 +2079,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2107,6 +2134,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2157,6 +2185,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("null".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2207,6 +2236,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("  ".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2260,6 +2290,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/nonexistent/path/that/does/not/exist".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2294,6 +2325,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/nonexistent/path/that/does/not/exist".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2349,6 +2381,7 @@ mod tests {
                     resume_from: None,
                     cwd: Some(sentinel.into()),
                     model: None,
+                    reasoning_effort: None,
                     task_id: None,
                 },
             )
@@ -2402,6 +2435,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2459,6 +2493,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("\"/tmp".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2511,6 +2546,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2559,6 +2595,7 @@ mod tests {
                 resume_from: Some("prev-id".into()),
                 cwd: Some("/tmp/some-dir".into()),
                 model: None,
+                reasoning_effort: None,
                 task_id: None,
             },
         )
@@ -2577,7 +2614,7 @@ mod tests {
     // ── model override tests ─────────────────────────────────────
 
     #[tokio::test]
-    async fn model_threads_to_runtime_overrides() {
+    async fn model_and_reasoning_effort_thread_to_runtime_overrides() {
         let (backend, mut rx) = make_backend();
         let resources = resources_for_task(backend);
         let shared = resources.into_shared();
@@ -2593,7 +2630,10 @@ mod tests {
                 request.runtime_overrides.model_override_provenance,
                 ModelOverrideProvenance::Tool,
             );
-            assert!(request.runtime_overrides.reasoning_effort.is_none());
+            assert_eq!(
+                request.runtime_overrides.reasoning_effort.as_deref(),
+                Some("high")
+            );
             assert!(request.runtime_overrides.persona.is_none());
             let id = request.id.clone();
             request
@@ -2610,6 +2650,7 @@ mod tests {
 
         let mut input = task_input("general-purpose", false);
         input.model = Some("test-model".into());
+        input.reasoning_effort = Some(" HIGH ".into());
         let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
             .await
             .unwrap();
@@ -2618,6 +2659,25 @@ mod tests {
             ToolOutput::SubagentCompleted(sub) => assert!(sub.output.contains("ok")),
             other => panic!("Expected SubagentCompleted, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_reasoning_effort_rejects_before_spawn() {
+        let (backend, mut rx) = make_backend();
+        let resources = resources_for_task(backend);
+        let mut input = task_input("general-purpose", false);
+        input.reasoning_effort = Some("extreme".into());
+
+        let error =
+            xai_tool_runtime::Tool::run(&TaskTool, test_ctx(resources.into_shared()), input)
+                .await
+                .expect_err("invalid reasoning effort must reject before spawn");
+
+        assert!(error.to_string().contains("invalid reasoning_effort"));
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid effort must not spawn a child"
+        );
     }
 
     #[tokio::test]
@@ -2746,7 +2806,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_from_with_model_soft_ignores_model() {
+    async fn resume_from_soft_ignores_model_but_applies_reasoning_effort() {
         let (backend, mut rx) = make_backend();
         let resources = resources_for_task(backend);
         let shared = resources.into_shared();
@@ -2763,7 +2823,10 @@ mod tests {
                 request.runtime_overrides.model_override_provenance,
                 ModelOverrideProvenance::Tool,
             );
-            assert!(request.runtime_overrides.reasoning_effort.is_none());
+            assert_eq!(
+                request.runtime_overrides.reasoning_effort.as_deref(),
+                Some("max")
+            );
             assert!(request.runtime_overrides.persona.is_none());
             let id = request.id.clone();
             request
@@ -2781,6 +2844,7 @@ mod tests {
         let mut input = task_input("general-purpose", false);
         input.resume_from = Some("prev-id".into());
         input.model = Some("test-model".into());
+        input.reasoning_effort = Some("MAX".into());
         let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
             .await
             .unwrap();

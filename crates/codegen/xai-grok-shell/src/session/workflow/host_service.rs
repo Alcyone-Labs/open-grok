@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use xai_grok_sampling_types::ReasoningEffort;
 use xai_grok_tools::implementations::grok_build::task::backend::{ChannelBackend, SubagentBackend};
 use xai_grok_tools::implementations::grok_build::task::types::{
     ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
@@ -31,6 +32,16 @@ const WORKFLOW_MAX_LOG_BYTES: usize = 4 * 1024;
 const WORKFLOW_CHILD_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const WORKFLOW_MAX_SCRATCH_NAME_BYTES: usize = 255;
 const SCRATCH_ARTIFACT_ROOT: &str = "scratch";
+
+fn normalize_workflow_reasoning_effort(value: Option<&str>) -> Result<Option<String>, HostError> {
+    value
+        .map(|raw| {
+            raw.parse::<ReasoningEffort>()
+                .map(|effort| effort.to_string())
+                .map_err(HostError::Failed)
+        })
+        .transpose()
+}
 
 pub(crate) type TelemetryHook = Arc<dyn Fn(&str, &serde_json::Value, bool) + Send + Sync>;
 
@@ -378,6 +389,8 @@ impl HostService {
         let isolation = opts
             .isolation_worktree
             .then_some(xai_tool_types::SubagentIsolationMode::Worktree);
+        let reasoning_effort =
+            normalize_workflow_reasoning_effort(opts.reasoning_effort.as_deref())?;
         let subagent_type = opts
             .agent_type
             .clone()
@@ -425,6 +438,7 @@ impl HostService {
                     cwd: None,
                     runtime_overrides: SubagentRuntimeOverrides {
                         model: opts.model.clone(),
+                        reasoning_effort: reasoning_effort.clone(),
                         output_token_budget: None,
                         model_override_provenance: ModelOverrideProvenance::Tool,
                         capability_mode,
@@ -846,6 +860,19 @@ mod tests {
     use crate::session::workflow::notify::WorkflowNotifySender;
     use crate::session::workflow::store::WorkflowRunStore;
     use crate::session::workflow::tracker::WorkflowTracker;
+
+    #[test]
+    fn workflow_reasoning_effort_normalizes_and_rejects_invalid_values() {
+        assert_eq!(
+            normalize_workflow_reasoning_effort(Some("HIGH")).unwrap(),
+            Some("high".into())
+        );
+        assert_eq!(
+            normalize_workflow_reasoning_effort(Some("none")).unwrap(),
+            Some("none".into())
+        );
+        assert!(normalize_workflow_reasoning_effort(Some("extreme")).is_err());
+    }
 
     #[tokio::test]
     async fn reserve_agent_calls_rolls_back_on_persist_failure() {

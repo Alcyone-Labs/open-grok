@@ -10,6 +10,8 @@ pub struct AgentOpts {
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
     pub max_output_tokens: Option<u64>,
     #[serde(default)]
     pub agent_type: Option<String>,

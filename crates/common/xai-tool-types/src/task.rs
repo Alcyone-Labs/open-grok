@@ -110,6 +110,17 @@ pub struct TaskToolInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
+    /// Optional reasoning effort for this subagent.
+    #[schemars(
+        description = "Optional reasoning effort for this agent. Supported values are none, \
+            minimal, low, medium, high, xhigh, max, and ultra. If omitted, the effort resolves \
+            from the subagent role or persona and then falls back to the parent session. Unlike \
+            model, this may be supplied with resume_from to select the effort for the resumed \
+            continuation."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+
     /// Server-injected before execution. Becomes the subagent's session ID.
     #[schemars(skip)]
     #[serde(default)]
@@ -143,6 +154,16 @@ pub struct AgentSwarmToolInput {
     )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+
+    /// Optional reasoning effort applied to every swarm member.
+    #[schemars(
+        description = "Optional reasoning effort applied to every swarm member, including resumed \
+            members. Supported values are none, minimal, low, medium, high, xhigh, max, and ultra. \
+            If omitted, each member resolves effort from its subagent role or persona and then \
+            falls back to the parent session."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 
     /// Template used to construct each item member prompt. It must contain the
     /// literal `{{item}}` placeholder when `items` is supplied.
@@ -236,6 +257,39 @@ pub fn is_not_sentinel(s: &str) -> bool {
         && !t.eq_ignore_ascii_case("null")
         && !t.eq_ignore_ascii_case("none")
         && !t.eq_ignore_ascii_case("undefined")
+}
+
+pub const SUBAGENT_REASONING_EFFORT_VALUES: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+/// Normalize an optional model-facing subagent reasoning effort.
+///
+/// Blank, `null`, and `undefined` values are treated as omitted. `none` is a
+/// valid explicit effort and therefore is intentionally not treated as a
+/// sentinel.
+pub fn normalize_subagent_reasoning_effort(
+    value: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("null")
+        || trimmed.eq_ignore_ascii_case("undefined")
+    {
+        return Ok(None);
+    }
+    let normalized = trimmed.to_ascii_lowercase();
+    if SUBAGENT_REASONING_EFFORT_VALUES.contains(&normalized.as_str()) {
+        Ok(Some(normalized))
+    } else {
+        Err(format!(
+            "invalid reasoning_effort {value:?} (expected one of: {})",
+            SUBAGENT_REASONING_EFFORT_VALUES.join(", ")
+        ))
+    }
 }
 
 /// Drop sentinels and trim; move the original `String` when no trim is needed.
@@ -1254,14 +1308,17 @@ mod tests {
         let input: TaskToolInput =
             serde_json::from_str(r#"{"description": "d", "prompt": "p"}"#).unwrap();
         assert!(input.model.is_none());
+        assert!(input.reasoning_effort.is_none());
     }
 
     #[test]
     fn task_tool_input_model_parses_explicit() {
-        let input: TaskToolInput =
-            serde_json::from_str(r#"{"description": "d", "prompt": "p", "model": "grok-3"}"#)
-                .unwrap();
+        let input: TaskToolInput = serde_json::from_str(
+            r#"{"description": "d", "prompt": "p", "model": "grok-3", "reasoning_effort": "high"}"#,
+        )
+        .unwrap();
         assert_eq!(input.model.as_deref(), Some("grok-3"));
+        assert_eq!(input.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
@@ -1276,10 +1333,29 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            reasoning_effort: None,
             task_id: None,
         };
         let value = serde_json::to_value(&input).unwrap();
         assert!(value.get("model").is_none());
+        assert!(value.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn subagent_reasoning_effort_normalizes_and_preserves_none() {
+        assert_eq!(
+            normalize_subagent_reasoning_effort(Some(" HIGH ".into())).unwrap(),
+            Some("high".into())
+        );
+        assert_eq!(
+            normalize_subagent_reasoning_effort(Some("none".into())).unwrap(),
+            Some("none".into())
+        );
+        assert_eq!(
+            normalize_subagent_reasoning_effort(Some("null".into())).unwrap(),
+            None
+        );
+        assert!(normalize_subagent_reasoning_effort(Some("extreme".into())).is_err());
     }
 
     #[test]

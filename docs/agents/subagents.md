@@ -61,6 +61,7 @@ Dynamic tool description is **not** the static template on `TaskTool`; it is bui
 Input rules:
 
 - `description` is shared by every member; `subagent_type` defaults to `general-purpose` for newly spawned members.
+- Optional `reasoning_effort` applies to every new or resumed member; omission preserves role/persona/parent fallback behavior.
 - `items` requires at least two entries unless `resume_agent_ids` is also supplied. Total members are capped at 128.
 - When `items` is present, `prompt_template` is required, must contain literal `{{item}}`, and must expand to distinct prompts.
 - `resume_agent_ids` is an insertion-ordered object of completed child IDs to continuation prompts. Resume members launch first and preserve the source child profile (type/persona/model) rather than applying the new-member default.

@@ -1146,6 +1146,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_options_forward_reasoning_effort() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let seen_in_host = seen.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let host = spawn_mock_host(rx, move |req| {
+            if let WorkflowHostRequest::SpawnAgent { opts, reply } = req {
+                *seen_in_host.lock().unwrap() = opts.reasoning_effort;
+                let _ = reply.send(Ok(agent_result("ok")));
+            }
+        });
+        let outcome = run_workflow(params(
+            r#"
+            let meta = #{ name: "t", description: "d" };
+            agent("review", #{ reasoning_effort: "high" });
+            complete("done");
+            "#,
+            Journal::new(None),
+            tx,
+        ));
+        drop(host);
+        assert!(matches!(outcome, WorkflowOutcome::Completed { .. }));
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("high"));
+    }
+
+    #[test]
     fn host_call_limit_is_non_catchable_and_prevents_sends() {
         let (tx, rx) = mpsc::unbounded_channel();
         let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

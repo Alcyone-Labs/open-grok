@@ -1136,7 +1136,7 @@ mod tests {
         let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
         let resolved = resolve_inline(
             "let meta = #{ name: \"t\", description: \"d\" };\n\
-             let r = agent(\"work\");\n\
+             let r = agent(\"work\", #{ reasoning_effort: \"high\" });\n\
              complete(r.output);"
                 .into(),
         )
@@ -1159,6 +1159,11 @@ mod tests {
             req.runtime_overrides.model_override_provenance,
             xai_grok_tools::implementations::grok_build::task::types::ModelOverrideProvenance::Tool,
             "script model overrides are untrusted tool provenance"
+        );
+        assert_eq!(
+            req.runtime_overrides.reasoning_effort.as_deref(),
+            Some("high"),
+            "workflow reasoning_effort must reach the shared subagent request"
         );
         let id = req.id.clone();
         let _ = req.result_tx.send(SubagentResult {
