@@ -66,16 +66,59 @@ pub(super) fn task_model_override_error(
         has_codex_session,
     )
 }
+
+fn validate_subagent_reasoning_effort(
+    raw: Option<&str>,
+    model_id: &str,
+    accepts: impl FnOnce(ReasoningEffort) -> bool,
+) -> Result<Option<ReasoningEffort>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let effort = raw
+        .parse::<ReasoningEffort>()
+        .map_err(|error| format!("Invalid subagent reasoning_effort {raw:?}: {error}"))?;
+    if !accepts(effort) {
+        return Err(format!(
+            "Model '{model_id}' does not accept reasoning_effort '{effort}'"
+        ));
+    }
+    Ok(Some(effort))
+}
+
+fn child_has_spawn_tools(definition: &xai_grok_agent::config::AgentDefinition) -> bool {
+    definition.tool_config.tools.iter().any(|tool| {
+        matches!(
+            tool.kind,
+            Some(
+                xai_grok_tools::types::tool::ToolKind::Task
+                    | xai_grok_tools::types::tool::ToolKind::AgentSwarm
+                    | xai_grok_tools::types::tool::ToolKind::Workflow
+            )
+        )
+    })
+}
+
+fn child_multi_agent_policy_enabled(
+    definition: &xai_grok_agent::config::AgentDefinition,
+    model_policy_enabled: bool,
+) -> bool {
+    model_policy_enabled && child_has_spawn_tools(definition)
+}
+
 fn apply_resolved_child_tool_policy(
     definition: &mut xai_grok_agent::config::AgentDefinition,
     capability_mode: Option<xai_tool_types::SubagentCapabilityMode>,
     child_depth: u32,
     max_depth: u32,
+    is_swarm: bool,
     is_workflow: bool,
     subagent_id: &str,
 ) {
     let tools_before_policy = definition.tool_config.tools.len();
-    let allow_nested_subagents = child_depth < max_depth;
+    // Swarm and workflow members stay flat even when ordinary subagent nesting
+    // is raised. Their cohort scheduler or script is the sole orchestrator.
+    let allow_nested_subagents = !is_swarm && !is_workflow && child_depth < max_depth;
     xai_grok_subagent_resolution::apply_child_tool_policy(
         definition,
         capability_mode,
@@ -119,6 +162,7 @@ fn apply_resolved_child_tool_policy(
         });
     }
 }
+
 /// Runtime adapter for one shell child. Shared lifecycle state is owned by the
 /// `xai-grok-tools` coordinator actor and reached only through `reporter`.
 #[tracing::instrument(
@@ -144,7 +188,7 @@ pub(crate) async fn run_shell_child(
         &request.id,
         &cancel_token,
     );
-    if request.owner.is_workflow() && cancel_token.is_cancelled() {
+    if cancel_token.is_cancelled() {
         return child_run_output(
             cancelled_result(&request, "Subagent was cancelled"),
             completion_data,
@@ -527,6 +571,7 @@ pub(crate) async fn run_shell_child(
         effective_runtime.capability_mode,
         child_depth,
         ctx.subagents_max_depth,
+        request.owner.is_swarm(),
         request.owner.is_workflow(),
         &request.id,
     );
@@ -639,6 +684,7 @@ pub(crate) async fn run_shell_child(
                     effective_runtime.capability_mode,
                     child_depth,
                     ctx.subagents_max_depth,
+                    request.owner.is_swarm(),
                     request.owner.is_workflow(),
                     &request.id,
                 );
@@ -649,20 +695,26 @@ pub(crate) async fn run_shell_child(
             }
         }
     }
-    if let Some(raw) = effective_runtime.reasoning_effort.as_deref()
-        && ctx
-            .models_manager
-            .model_supports_reasoning_effort(effective_model_id.0.as_ref())
-    {
-        match raw.parse::<ReasoningEffort>() {
-            Ok(eff) => effective_sampling_config.reasoning_effort = Some(eff),
-            Err(err) => {
-                tracing::warn!(
-                    value = raw,
-                    error = %err,
-                    "subagent reasoning_effort: parse failed, ignoring override"
-                )
-            }
+    // Codex v2 treats Ultra as a proactive multi-agent policy, not only an
+    // effort tier. A flat child cannot satisfy that instruction.
+    let multi_agent_policy_enabled = child_has_spawn_tools(&definition);
+    effective_sampling_config.codex_multi_agent_v2 = child_multi_agent_policy_enabled(
+        &definition,
+        effective_sampling_config.codex_multi_agent_v2,
+    );
+    let reasoning_effort = validate_subagent_reasoning_effort(
+        effective_runtime.reasoning_effort.as_deref(),
+        effective_model_id.0.as_ref(),
+        |effort| {
+            ctx.models_manager
+                .model_accepts_reasoning_effort(effective_model_id.0.as_ref(), effort)
+        },
+    );
+    match reasoning_effort {
+        Ok(Some(effort)) => effective_sampling_config.reasoning_effort = Some(effort),
+        Ok(None) => {}
+        Err(message) => {
+            return child_run_output(failure_result(&request, &message), completion_data, None);
         }
     }
     ctx.provider_boundary
@@ -1297,6 +1349,7 @@ pub(crate) async fn run_shell_child(
             subagent_type: Some(request.subagent_type.clone()),
             preserve_inherited_system: verbatim_mirror_fork,
             subagent_status_tx: child_status_tx,
+            multi_agent_policy_enabled: Some(multi_agent_policy_enabled),
             ..Default::default()
         },
         xai_grok_workspace::permission::ClientType::Generic,
@@ -2186,4 +2239,58 @@ pub(crate) async fn run_shell_child(
         })),
     );
     child_run_output(result, completion_data, disposed_snapshot_ref)
+}
+
+#[cfg(test)]
+mod child_tool_policy_tests {
+    use super::*;
+
+    #[test]
+    fn orchestrated_children_are_flat_even_when_ordinary_nesting_is_enabled() {
+        let mut ordinary = xai_grok_agent::config::AgentDefinition::codex();
+        assert!(child_has_spawn_tools(&ordinary));
+        apply_resolved_child_tool_policy(&mut ordinary, None, 1, 2, false, false, "ordinary");
+        assert!(
+            child_has_spawn_tools(&ordinary),
+            "ordinary child may retain spawn tools below configured max depth"
+        );
+
+        let mut swarm = xai_grok_agent::config::AgentDefinition::codex();
+        apply_resolved_child_tool_policy(&mut swarm, None, 1, 2, true, false, "swarm");
+        assert!(
+            !child_has_spawn_tools(&swarm),
+            "swarm child must remain flat regardless of configured max depth"
+        );
+
+        let mut workflow = xai_grok_agent::config::AgentDefinition::codex();
+        apply_resolved_child_tool_policy(&mut workflow, None, 1, 2, false, true, "workflow");
+        assert!(
+            !child_has_spawn_tools(&workflow),
+            "workflow child must remain flat regardless of configured max depth"
+        );
+        assert!(!child_multi_agent_policy_enabled(&swarm, true));
+        assert!(!child_multi_agent_policy_enabled(&workflow, true));
+        assert!(child_multi_agent_policy_enabled(&ordinary, true));
+    }
+
+    #[test]
+    fn reasoning_effort_must_be_accepted_by_effective_model() {
+        assert_eq!(
+            validate_subagent_reasoning_effort(Some("high"), "model", |effort| {
+                effort == ReasoningEffort::High
+            })
+            .unwrap(),
+            Some(ReasoningEffort::High)
+        );
+        assert!(
+            validate_subagent_reasoning_effort(Some("ultra"), "model", |_| false)
+                .unwrap_err()
+                .contains("does not accept")
+        );
+        assert!(
+            validate_subagent_reasoning_effort(Some("invalid"), "model", |_| true)
+                .unwrap_err()
+                .contains("Invalid subagent reasoning_effort")
+        );
+    }
 }

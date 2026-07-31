@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use xai_grok_sampling_types::ReasoningEffort;
 use xai_grok_tools::implementations::grok_build::task::backend::{ChannelBackend, SubagentBackend};
 use xai_grok_tools::implementations::grok_build::task::types::{
     ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
@@ -34,13 +33,8 @@ const WORKFLOW_MAX_SCRATCH_NAME_BYTES: usize = 255;
 const SCRATCH_ARTIFACT_ROOT: &str = "scratch";
 
 fn normalize_workflow_reasoning_effort(value: Option<&str>) -> Result<Option<String>, HostError> {
-    value
-        .map(|raw| {
-            raw.parse::<ReasoningEffort>()
-                .map(|effort| effort.to_string())
-                .map_err(HostError::Failed)
-        })
-        .transpose()
+    xai_tool_types::normalize_subagent_reasoning_effort(value.map(str::to_string))
+        .map_err(HostError::Failed)
 }
 
 pub(crate) type TelemetryHook = Arc<dyn Fn(&str, &serde_json::Value, bool) + Send + Sync>;
@@ -864,12 +858,16 @@ mod tests {
     #[test]
     fn workflow_reasoning_effort_normalizes_and_rejects_invalid_values() {
         assert_eq!(
-            normalize_workflow_reasoning_effort(Some("HIGH")).unwrap(),
+            normalize_workflow_reasoning_effort(Some(" HIGH ")).unwrap(),
             Some("high".into())
         );
         assert_eq!(
             normalize_workflow_reasoning_effort(Some("none")).unwrap(),
             Some("none".into())
+        );
+        assert_eq!(
+            normalize_workflow_reasoning_effort(Some("null")).unwrap(),
+            None
         );
         assert!(normalize_workflow_reasoning_effort(Some("extreme")).is_err());
     }

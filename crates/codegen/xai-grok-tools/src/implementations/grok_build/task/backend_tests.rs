@@ -226,7 +226,7 @@ async fn channel_backend_cancel_closed_channel() {
 }
 
 #[tokio::test]
-async fn workflow_spawn_future_drop_cancels_but_task_drop_does_not() {
+async fn orchestrator_spawn_future_drop_cancels_but_task_drop_does_not() {
     fn request_for(owner: super::super::types::SubagentOwner) -> SubagentRequest {
         SubagentRequest {
             id: "drop-owner-test".to_string(),
@@ -250,6 +250,7 @@ async fn workflow_spawn_future_drop_cancels_but_task_drop_does_not() {
 
     for (owner, should_cancel) in [
         (super::super::types::SubagentOwner::Task, false),
+        (super::super::types::SubagentOwner::Swarm, true),
         (super::super::types::SubagentOwner::workflow("wf-1"), true),
     ] {
         let (tx, mut rx) = mpsc::unbounded_channel::<SubagentEvent>();
@@ -266,7 +267,7 @@ async fn workflow_spawn_future_drop_cancels_but_task_drop_does_not() {
         assert_eq!(
             cancel_token.is_cancelled(),
             should_cancel,
-            "only workflow receiver drop owns cancellation"
+            "swarm and workflow receiver drops own cancellation"
         );
         drop(spawned.result_tx);
     }

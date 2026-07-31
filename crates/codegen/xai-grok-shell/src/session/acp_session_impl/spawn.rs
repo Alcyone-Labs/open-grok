@@ -1256,6 +1256,7 @@ pub(crate) async fn spawn_session_actor(
         user_question_tx: user_question_tx.clone(),
         subagent_depth: tool_context.subagent_depth,
         subagents_max_depth,
+        multi_agent_policy_enabled: startup_hints.multi_agent_policy_enabled.unwrap_or(true),
         session_id_str: session_info.id.0.to_string(),
         blocking_wait_depth: tool_context.blocking_wait_depth.clone(),
         respect_gitignore,

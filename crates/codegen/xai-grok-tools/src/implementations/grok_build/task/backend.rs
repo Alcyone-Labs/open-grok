@@ -259,7 +259,7 @@ impl SubagentBackend for ChannelBackend {
             request.parent_session_id = parent_session_id.to_owned();
         }
         let (respond_to, response_rx) = oneshot::channel();
-        let cancel_on_receiver_drop = request.owner.is_workflow();
+        let cancel_on_receiver_drop = request.owner.cancel_on_receiver_drop();
         let cancel_token = request.cancel_token.clone();
         self.tx
             .send(SubagentEvent::Spawn(SubagentSpawnRequest {

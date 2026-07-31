@@ -710,9 +710,11 @@ impl SessionActor {
                 &extra_headers,
             )) as xai_grok_sampler::SharedBearerResolver
         });
-        let codex_multi_agent_v2 = self
-            .models_manager
-            .model_supports_codex_multi_agent_v2(&cfg.model);
+        let codex_multi_agent_v2 = session_codex_multi_agent_v2(
+            self.models_manager
+                .model_supports_codex_multi_agent_v2(&cfg.model),
+            self.rebuild_spec.multi_agent_policy_enabled,
+        );
         let reasoning_summary = self.models_manager.model_reasoning_summary(&cfg.model);
         SamplingConfig {
             api_key,
@@ -2035,6 +2037,22 @@ impl SessionActor {
         }
         self.chat_state_handle
             .push_assistant_response(assistant_item);
+    }
+}
+
+fn session_codex_multi_agent_v2(model_supports_policy: bool, session_policy_enabled: bool) -> bool {
+    model_supports_policy && session_policy_enabled
+}
+
+#[cfg(test)]
+mod multi_agent_policy_tests {
+    use super::session_codex_multi_agent_v2;
+
+    #[test]
+    fn flat_child_cannot_reenable_codex_multi_agent_policy() {
+        assert!(session_codex_multi_agent_v2(true, true));
+        assert!(!session_codex_multi_agent_v2(true, false));
+        assert!(!session_codex_multi_agent_v2(false, true));
     }
 }
 

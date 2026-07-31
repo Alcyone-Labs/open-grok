@@ -62,6 +62,7 @@ Input rules:
 
 - `description` is shared by every member; `subagent_type` defaults to `general-purpose` for newly spawned members.
 - Optional `reasoning_effort` applies to every new or resumed member; omission preserves role/persona/parent fallback behavior.
+- New-member `model` validation is skipped for resume-only calls because resumed children keep their source model. An explicit/effective effort is rejected if the member model's catalog menu does not accept it.
 - `items` requires at least two entries unless `resume_agent_ids` is also supplied. Total members are capped at 128.
 - When `items` is present, `prompt_template` is required, must contain literal `{{item}}`, and must expand to distinct prompts.
 - `resume_agent_ids` is an insertion-ordered object of completed child IDs to continuation prompts. Resume members launch first and preserve the source child profile (type/persona/model) rather than applying the new-member default.
@@ -72,9 +73,11 @@ Scheduling and output:
 - Launch up to five members immediately, then at most one additional member every 700 ms. `OPENGROK_AGENT_SWARM_MAX_CONCURRENCY` can apply a positive active-member cap.
 - Launch priority is a suspended same-agent retry, then an explicit resume, then a new member. A retry resumes the live child turn through its scheduler decision lane; the child does not sleep or create a replacement session.
 - The first provider 429 enters rate-limit phase. The affected member is requeued at the front with per-member eligibility of 3 s, 6 s, 12 s, 24 s, and so on. If it is already the only unfinished member, the scheduler fails it instead of leaving the swarm suspended indefinitely.
+- Antigravity CLI members emit `ProviderRequestStarted` so they contribute to adaptive capacity, but agy exposes no verified typed 429 pause/retry signal. Its quota failures remain terminal instead of being guessed from human-readable CLI text and relaunched as a replacement conversation.
 - Rate-limit capacity starts from the number of normal members that reached their first provider request, minus one, with a minimum of one. Later 429s shrink capacity by one at most every two seconds. While rate-limited, a scheduling pass starts at most one retry/resume/new member and requires both the global launch gate and the selected member's eligibility deadline to have elapsed.
 - A provider-ready attempt resets the global retry interval to three seconds. If work remains queued and no 429 occurs for three minutes, capacity recovers by one once for that quiet window; another 429 starts a new window.
 - Each member has a two-hour default timeout (`OPENGROK_SUBAGENT_TIMEOUT_MS`; `0` disables it).
+- Members carry `SubagentOwner::Swarm` and `await_to_completion`: the swarm scheduler owns foreground timeout/aggregation, so the ordinary task foreground budget cannot silently background a member. Dropping the orchestration future cancels its live member spawns.
 - Results are collected into fixed input-order slots and returned under `<agent_swarm_result>`, including resumable agent IDs for unfinished work.
 - Swarm metadata rides on ordinary `SubagentSpawned` / progress / finish notifications, so coordinator lifecycle, usage fold-back, permissions, resume identity, and worktree handling remain the normal subagent paths.
 
@@ -173,7 +176,7 @@ Additionally, if effective isolation is still `none` but `AgentDefinition.isolat
 
 **Children do not inherit the parent’s worktree by default.**
 
-## Depth limit (`MAX_SUBAGENT_DEPTH = 1`)
+## Depth limit (default `MAX_SUBAGENT_DEPTH = 1`)
 
 ```text
 Parent session depth 0  →  may call task
@@ -182,10 +185,10 @@ Child  session depth 1  →  task + agent_swarm + workflow stripped / calls reje
 
 Two complementary guards:
 
-1. **Call-time reject** in `TaskTool::run` when `SubagentDepthCounter >= 1`.
-2. **Toolset strip** in `handle_subagent_request`: if `parent_depth + 1 >= MAX_SUBAGENT_DEPTH`, remove `ToolKind::Task`, `ToolKind::AgentSwarm`, and `ToolKind::Workflow`, then prune orphaned background task tools so the model never sees a nested spawn surface.
+1. **Call-time reject** in `TaskTool::run` when `SubagentDepthCounter` reaches the resolved max depth.
+2. **Toolset strip** in `handle_subagent_request`: at the resolved max depth, remove `ToolKind::Task`, `ToolKind::AgentSwarm`, and `ToolKind::Workflow`, then prune orphaned background task tools so the model never sees a nested spawn surface.
 
-Child `tool_context.subagent_depth` and shared `SubagentDepthCounter` are set to `parent_depth + 1` at spawn. Nested depth > 1 is unsupported by design (flat tree).
+Child `tool_context.subagent_depth` and shared `SubagentDepthCounter` are set to `parent_depth + 1` at spawn. The default is a flat tree. If ordinary task nesting is explicitly raised, agent-swarm and workflow members are still forced flat; their cohort/script is the only orchestrator. Flat children also disable the Codex-v2 multi-agent policy bit at spawn and during every sampling-config reconstruction, so `ultra` effort cannot inject proactive-delegation instructions they have no tools to satisfy.
 
 ## Permissions vs plan mode
 

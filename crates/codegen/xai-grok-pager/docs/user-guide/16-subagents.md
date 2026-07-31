@@ -153,7 +153,7 @@ The main agent calls the `spawn_subagent` tool. Its parameters:
 | `resume_from`     | Continue a completed subagent's conversation. Pass its subagent ID. |
 | `cwd`             | Working directory for the subagent. Mutually exclusive with `isolation: worktree`; ignored when `resume_from` is set (the resumed child inherits its source's directory). |
 | `model`           | Optional model slug. Omit it to inherit the parent model; resumed agents keep their source model. |
-| `reasoning_effort` | Optional effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. Omit it to use role/persona defaults and then the parent session. It may be supplied when resuming. |
+| `reasoning_effort` | Optional effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. Omit it to use role/persona defaults and then the parent session. It may be supplied when resuming and must be supported by the effective model. |
 
 When you run a subagent in the background, retrieve its result later with `get_command_or_subagent_output`.
 
@@ -179,7 +179,7 @@ Use the slash controls:
 swarm_mode = true
 ```
 
-When active, the footer shows a `swarm` badge. A swarm appears in scrollback as one expandable card with a row for every member, kept in input order. The card summarizes queued, running, completed, failed, and cancelled members and shows live turn/tool counts, duration, and context usage when available. Child transcripts are still available from the tasks pane.
+When active, the footer shows a `swarm` badge. A swarm appears in scrollback as one expandable purple card with a tree row for every member, kept in input order. The purple accent pulses while work is active; per-member states retain green, amber, and red status colors. Ordinary subagent cards use a warm orange label and running accent, so they remain visually distinct. The swarm card summarizes queued, running, completed, failed, and cancelled members and shows live turn/tool counts, duration, and context usage when available. Child transcripts are still available from the tasks pane.
 
 The model-facing `agent_swarm` tool supports:
 
@@ -193,7 +193,7 @@ The model-facing `agent_swarm` tool supports:
 | `prompt_template` | Required with `items`; must contain literal `{{item}}`. |
 | `resume_agent_ids` | Ordered object mapping completed subagent IDs to continuation prompts. Resumed members run first and keep their original profile. |
 
-Open Grok validates the full swarm before starting any child. It launches up to five members immediately, then ramps additional members every 700 ms. If the provider rate-limits a member, the swarm card shows that live child as waiting while the scheduler retries the same session after 3 s, 6 s, 12 s, and progressively longer delays. Waiting retries take priority over resumes and new members; concurrency shrinks during repeated rate limits and recovers after a quiet period. A rate-limited member fails normally when it is the only unfinished member, so the swarm cannot remain suspended forever.
+Open Grok validates the full swarm before starting any child. It launches up to five members immediately, then ramps additional members every 700 ms. If an in-process provider rate-limits a member, the swarm card shows that live child as waiting while the scheduler retries the same session after 3 s, 6 s, 12 s, and progressively longer delays. Waiting retries take priority over resumes and new members; concurrency shrinks during repeated rate limits and recovers after a quiet period. A rate-limited member fails normally when it is the only unfinished member, so the swarm cannot remain suspended forever. Antigravity CLI members contribute provider-ready status and live phase updates, but opaque CLI quota failures remain terminal because agy does not expose the same typed pause/retry signal.
 
 Swarms use the same flat subagent tree: swarm members cannot spawn `task` or another `agent_swarm`.
 

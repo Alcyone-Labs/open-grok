@@ -628,6 +628,11 @@ pub struct StartupHints {
             xai_grok_tools::implementations::grok_build::task::types::SubagentStatusEvent,
         >,
     >,
+    /// Runtime-only gate for Codex v2's multi-agent policy injection. Flat
+    /// children set this false so per-turn config reconstruction cannot
+    /// re-enable delegation instructions after spawn.
+    #[serde(skip)]
+    pub multi_agent_policy_enabled: Option<bool>,
 }
 
 #[cfg(test)]

@@ -400,7 +400,7 @@ pub(super) trait ForegroundChild {
     /// True when the spawn caller dropped its result receiver while this
     /// child was still treated as turn-blocking (old shell `ParentGone`).
     fn caller_gone(&self) -> bool;
-    fn is_workflow(&self) -> bool;
+    fn cancel_on_caller_gone(&self) -> bool;
     fn take_reply(&mut self) -> Option<oneshot::Sender<SubagentResult>>;
     fn mark_backgrounded(&mut self);
     /// Cancel the child's execution (token + active control where present).
@@ -424,8 +424,8 @@ impl ForegroundChild for PendingChild {
         !self.handle_only && self.spawn_reply.as_ref().is_some_and(|tx| tx.is_closed())
     }
 
-    fn is_workflow(&self) -> bool {
-        self.request.owner.is_workflow()
+    fn cancel_on_caller_gone(&self) -> bool {
+        self.request.owner.cancel_on_receiver_drop()
     }
 
     fn take_reply(&mut self) -> Option<oneshot::Sender<SubagentResult>> {
@@ -459,8 +459,8 @@ impl<C: ChildControl> ForegroundChild for ActiveChild<C> {
         !self.handle_only && self.spawn_reply.as_ref().is_some_and(|tx| tx.is_closed())
     }
 
-    fn is_workflow(&self) -> bool {
-        self.request.owner.is_workflow()
+    fn cancel_on_caller_gone(&self) -> bool {
+        self.request.owner.cancel_on_receiver_drop()
     }
 
     fn take_reply(&mut self) -> Option<oneshot::Sender<SubagentResult>> {
@@ -508,18 +508,19 @@ pub(super) fn background_at_deadline(
 /// Handle a foreground child whose spawn caller dropped the result channel
 /// (parent turn stop / cancelled await). Task-owned children keep running and
 /// just leave the turn-blocking `Outstanding` set — shell `ParentGone` parity.
-/// Workflow-owned children are CANCELLED instead (old shell `ParentGone`
-/// cancelled workflow children); `ChannelBackend`'s drop-cancel arming remains
-/// defense in depth for hosts that go through it.
+/// Swarm- and workflow-owned children are CANCELLED instead because their
+/// orchestrators cannot reconstruct an aggregate result after the caller is
+/// gone. `ChannelBackend`'s drop-cancel arming remains defense in depth for
+/// hosts that go through it.
 pub(super) fn background_if_caller_gone(child: &mut impl ForegroundChild) {
     if !child.caller_gone() {
         return;
     }
     let _ = child.take_reply();
-    if child.is_workflow() {
+    if child.cancel_on_caller_gone() {
         tracing::debug!(
             subagent_id = child.id(),
-            "workflow subagent caller gone; cancelling child",
+            "orchestrator-owned subagent caller gone; cancelling child",
         );
         child.cancel();
         return;

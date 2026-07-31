@@ -9,6 +9,7 @@ use std::{
 
 use futures::{StreamExt, stream::FuturesUnordered};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use xai_tool_types::{AgentSwarmToolInput, is_not_sentinel};
 
 use crate::{
@@ -17,9 +18,9 @@ use crate::{
         backend::{SubagentBackend, SubagentBackendResource},
         types::{
             CurrentPromptIdResource, ModelOverrideProvenance, SWARM_RATE_LIMIT_RETRY_BASE_MS,
-            SessionIdResource, SubagentDepthCounter, SubagentRateLimitDecision, SubagentRequest,
-            SubagentResult, SubagentRuntimeOverrides, SubagentStatusEvent,
-            SubagentValidateTypeOutcome, SwarmMemberMeta, TaskModelValidator,
+            SessionIdResource, SubagentDepthCounter, SubagentForegroundWait,
+            SubagentRateLimitDecision, SubagentRequest, SubagentResult, SubagentRuntimeOverrides,
+            SubagentStatusEvent, SubagentValidateTypeOutcome, SwarmMemberMeta, TaskModelValidator,
             swarm_rate_limit_backoff,
         },
     },
@@ -72,29 +73,12 @@ impl MemberOutcome {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MemberState {
-    Started,
-    #[allow(dead_code)] // Reserved for a future cancellation result that can be rendered.
-    NotStarted,
-}
-
-impl MemberState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Started => "started",
-            Self::NotStarted => "not_started",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MemberResult {
     index: u32,
     item: Option<String>,
     agent_id: String,
     outcome: MemberOutcome,
-    state: MemberState,
     mode: MemberMode,
     body: String,
 }
@@ -290,6 +274,9 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
         ctx: xai_tool_runtime::ToolCallContext,
         input: AgentSwarmToolInput,
     ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+        let tool_cancellation = ctx
+            .get::<xai_tool_runtime::Cancellation>()
+            .map(|cancellation| cancellation.0.clone());
         // Everything below this line that can reject a call is resolved before
         // any child request reaches the backend.
         let members =
@@ -299,7 +286,7 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
         let timeout =
             subagent_timeout_from_env().map_err(xai_tool_runtime::ToolError::invalid_arguments)?;
         let resources = crate::types::tool_metadata::shared_resources(&ctx)?;
-        let (depth, backend, model_validator, parent_session_id, parent_prompt_id) = {
+        let (depth, backend, model_validator, parent_session_id, parent_prompt_id, foreground_wait) = {
             let res = resources.lock().await;
             (
                 res.get::<SubagentDepthCounter>().map(|d| d.0).unwrap_or(0),
@@ -318,6 +305,7 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
                 res.get::<CurrentPromptIdResource>()
                     .map(|p| p.0.clone())
                     .filter(|id| !id.is_empty()),
+                res.get::<SubagentForegroundWait>().cloned(),
             )
         };
         if depth >= MAX_SUBAGENT_DEPTH {
@@ -325,7 +313,8 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
                 "Subagent depth limit exceeded (current depth: {depth}, max: {MAX_SUBAGENT_DEPTH}). Cannot spawn further nested subagents."
             )));
         }
-        if members.iter().any(|member| member.mode == MemberMode::New) {
+        let has_new_members = members.iter().any(|member| member.mode == MemberMode::New);
+        if has_new_members {
             match backend
                 .backend()
                 .validate_type(&input.subagent_type, &parent_session_id)
@@ -333,9 +322,11 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
             {
                 SubagentValidateTypeOutcome::Ok => {}
                 SubagentValidateTypeOutcome::Unknown { available } => {
-                    let suffix = (!available.is_empty())
-                        .then(|| format!(". Available types: {}", available.join(", ")))
-                        .unwrap_or_default();
+                    let suffix = if available.is_empty() {
+                        String::new()
+                    } else {
+                        format!(". Available types: {}", available.join(", "))
+                    };
                     return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
                         "Unknown subagent type: {}{suffix}",
                         input.subagent_type
@@ -371,7 +362,7 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
         let reasoning_effort =
             xai_tool_types::normalize_subagent_reasoning_effort(input.reasoning_effort)
                 .map_err(xai_tool_runtime::ToolError::invalid_arguments)?;
-        if let Some(ref requested) = member_model {
+        if has_new_members && let Some(ref requested) = member_model {
             let validator = model_validator.ok_or_else(|| {
                 xai_tool_runtime::ToolError::custom(
                     "validation_unavailable",
@@ -383,6 +374,15 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
             }
         }
 
+        let _foreground_wait = foreground_wait.map(|wait| wait.enter());
+        let swarm_cancellation = CancellationToken::new();
+        let cancellation_forwarder = tool_cancellation.map(|tool_cancellation| {
+            let swarm_cancellation = swarm_cancellation.clone();
+            tokio::spawn(async move {
+                tool_cancellation.cancelled().await;
+                swarm_cancellation.cancel();
+            })
+        });
         let results = run_scheduler(
             backend.0.clone(),
             members,
@@ -394,11 +394,15 @@ impl xai_tool_runtime::Tool for AgentSwarmTool {
                 parent_prompt_id,
                 model: member_model,
                 reasoning_effort,
+                cancellation: swarm_cancellation,
             },
             concurrency_cap,
             timeout,
         )
         .await;
+        if let Some(forwarder) = cancellation_forwarder {
+            forwarder.abort();
+        }
         Ok(ToolOutput::Text(render_xml(&results).into()))
     }
 }
@@ -415,6 +419,9 @@ struct SwarmRequestContext {
     model: Option<String>,
     /// Effort override applied to every member, including resumed continuations.
     reasoning_effort: Option<String>,
+    /// Root cancellation linked to this foreground tool invocation. Each
+    /// member receives a child token so cancelling one member stays local.
+    cancellation: CancellationToken,
 }
 
 fn validate_and_plan(input: &AgentSwarmToolInput) -> Result<Vec<PlannedMember>, String> {
@@ -732,10 +739,12 @@ fn build_member_request(
         cwd: None,
         run_in_background: false,
         surface_completion: false,
-        await_to_completion: false,
+        // The swarm scheduler, rather than the ordinary task foreground
+        // budget, owns member timeout and aggregation.
+        await_to_completion: true,
         fork_context: false,
-        owner: crate::implementations::grok_build::task::types::SubagentOwner::Task,
-        cancel_token: tokio_util::sync::CancellationToken::new(),
+        owner: crate::implementations::grok_build::task::types::SubagentOwner::Swarm,
+        cancel_token: context.cancellation.child_token(),
     }
 }
 
@@ -767,7 +776,6 @@ async fn spawn_member(
                         item: member.item,
                         agent_id,
                         outcome: MemberOutcome::Failed,
-                        state: MemberState::Started,
                         mode: member.mode,
                         body: "subagent timed out".to_string(),
                     },
@@ -789,7 +797,6 @@ async fn spawn_member(
             item: member.item,
             agent_id: agent_id.clone(),
             outcome: MemberOutcome::Failed,
-            state: MemberState::Started,
             mode: member.mode,
             body: error.to_string(),
         },
@@ -804,14 +811,18 @@ fn member_result(
     fallback_agent_id: String,
     result: SubagentResult,
 ) -> MemberResult {
-    let outcome = if result.cancelled {
+    let outcome = if result.backgrounded {
+        MemberOutcome::Failed
+    } else if result.cancelled {
         MemberOutcome::Aborted
     } else if result.success {
         MemberOutcome::Completed
     } else {
         MemberOutcome::Failed
     };
-    let body = if outcome == MemberOutcome::Completed {
+    let body = if result.backgrounded {
+        "swarm member was unexpectedly auto-backgrounded before completion".to_string()
+    } else if outcome == MemberOutcome::Completed {
         result.output.to_string()
     } else {
         result.error.unwrap_or_else(|| result.output.to_string())
@@ -825,7 +836,6 @@ fn member_result(
             result.subagent_id
         },
         outcome,
-        state: MemberState::Started,
         mode,
         body,
     }
@@ -870,10 +880,12 @@ fn render_xml(results: &[MemberResult]) -> String {
         if let Some(item) = result.item.as_deref() {
             xml.push_str(&format!(" item=\"{}\"", xml_escape(item)));
         }
+        // Only members submitted to the backend can produce a rendered
+        // result. Cancellation before scheduling drops the whole tool future,
+        // so the stable output state for every result is `started`.
         xml.push_str(&format!(
-            " outcome=\"{}\" state=\"{}\"",
+            " outcome=\"{}\" state=\"started\"",
             result.outcome.as_str(),
-            result.state.as_str(),
         ));
         if result.mode == MemberMode::Resume {
             xml.push_str(" mode=\"resume\"");
@@ -894,8 +906,9 @@ mod tests {
 
     use super::*;
     use crate::implementations::grok_build::task::types::{
-        SubagentCancelOutcome, SubagentDescribeOutcome, SubagentSnapshot,
+        SubagentCancelOutcome, SubagentDescribeOutcome, SubagentOwner, SubagentSnapshot,
     };
+    use crate::types::{resources::Resources, tool_metadata::test_ctx};
 
     fn input(
         items: Option<Vec<&str>>,
@@ -927,6 +940,7 @@ mod tests {
             parent_prompt_id: Some("turn".to_string()),
             model: None,
             reasoning_effort: None,
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -1071,6 +1085,39 @@ mod tests {
         assert_eq!(request.resume_from.as_deref(), Some("resume"));
         assert!(!request.run_in_background);
         assert!(!request.surface_completion);
+        assert!(request.await_to_completion);
+        assert_eq!(request.owner, SubagentOwner::Swarm);
+    }
+
+    #[test]
+    fn member_cancellation_is_linked_one_way_to_swarm_tool() {
+        fn member(context: SwarmRequestContext) -> SubagentRequest {
+            build_member_request(
+                PlannedMember {
+                    index: 0,
+                    item: Some("item".to_string()),
+                    prompt: "prompt".to_string(),
+                    resume_from: None,
+                    mode: MemberMode::New,
+                },
+                context,
+                1,
+                "child".to_string(),
+                None,
+            )
+        }
+
+        let parent_context = context();
+        let parent = parent_context.cancellation.clone();
+        let child = member(parent_context).cancel_token;
+        parent.cancel();
+        assert!(child.is_cancelled());
+
+        let parent_context = context();
+        let parent = parent_context.cancellation.clone();
+        let child = member(parent_context).cancel_token;
+        child.cancel();
+        assert!(!parent.is_cancelled());
     }
 
     #[test]
@@ -1146,6 +1193,45 @@ mod tests {
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn resume_only_swarm_ignores_unused_model_override() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let mut resources = Resources::new();
+        resources.insert(SubagentBackendResource(backend.clone()));
+        resources.insert(SessionIdResource("parent".to_string()));
+        resources.insert(TaskModelValidator::new(|_| {
+            Some("model must not be validated for resume-only swarm".to_string())
+        }));
+        let mut args = input(None, Some(vec![("prior", "continue")]), None);
+        args.model = Some("stale-model".to_string());
+
+        xai_tool_runtime::Tool::run(&AgentSwarmTool, test_ctx(resources.into_shared()), args)
+            .await
+            .expect("resume-only swarm must ignore the unused model override");
+
+        let requests = backend.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].runtime_overrides.model.is_none());
+    }
+
+    #[test]
+    fn auto_backgrounded_member_is_reported_as_invariant_failure() {
+        let result = member_result(
+            0,
+            Some("item".to_string()),
+            MemberMode::New,
+            "child".to_string(),
+            SubagentResult {
+                backgrounded: true,
+                subagent_id: "child".to_string(),
+                child_session_id: "child".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.outcome, MemberOutcome::Failed);
+        assert!(result.body.contains("unexpectedly auto-backgrounded"));
+    }
+
     #[test]
     fn xml_is_ordered_escaped_and_only_hints_incomplete_members() {
         let xml = render_xml(&[
@@ -1154,7 +1240,6 @@ mod tests {
                 item: None,
                 agent_id: "resume&".into(),
                 outcome: MemberOutcome::Failed,
-                state: MemberState::Started,
                 mode: MemberMode::Resume,
                 body: "<failure>".into(),
             },
@@ -1163,7 +1248,6 @@ mod tests {
                 item: Some("<item>".into()),
                 agent_id: "done".into(),
                 outcome: MemberOutcome::Completed,
-                state: MemberState::Started,
                 mode: MemberMode::New,
                 body: "<&>".into(),
             },
@@ -1185,7 +1269,6 @@ mod tests {
             item: None,
             agent_id: "done".into(),
             outcome: MemberOutcome::Completed,
-            state: MemberState::Started,
             mode: MemberMode::New,
             body: "ok".into(),
         }]);

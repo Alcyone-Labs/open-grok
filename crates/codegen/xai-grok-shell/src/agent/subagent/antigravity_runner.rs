@@ -23,7 +23,9 @@ use crate::agent::antigravity::{self, AgyRun, AgyRunError};
 use crate::extensions::notification::SessionUpdate;
 use crate::session::info::Info as SessionInfo;
 use xai_grok_tools::implementations::grok_build::task::coordinator::ChildRunOutput;
-use xai_grok_tools::implementations::grok_build::task::types::{SubagentRequest, SubagentResult};
+use xai_grok_tools::implementations::grok_build::task::types::{
+    SubagentRequest, SubagentResult, SubagentStatusEvent,
+};
 
 use super::{
     ShellCompletionData, SubagentMeta, SubagentSpawnContext, child_run_output,
@@ -34,18 +36,34 @@ use super::{
 /// Fallback wall-clock budget for one `agy --print` run when
 /// `OPENGROK_SUBAGENT_TIMEOUT_MS` is unset.
 const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(600);
+const DEFAULT_SWARM_RUN_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Cadence for the live `agy.log` tailer: at most one heartbeat / quota-probe
 /// poll every this interval while a run is active.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 
-fn run_timeout() -> Duration {
+fn run_timeout(is_swarm: bool) -> Duration {
     std::env::var("OPENGROK_SUBAGENT_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_millis)
         .filter(|d| *d >= Duration::from_secs(30))
-        .unwrap_or(DEFAULT_RUN_TIMEOUT)
+        .unwrap_or(if is_swarm {
+            DEFAULT_SWARM_RUN_TIMEOUT
+        } else {
+            DEFAULT_RUN_TIMEOUT
+        })
+}
+
+fn notify_swarm_provider_started(
+    status_tx: Option<&tokio::sync::mpsc::UnboundedSender<SubagentStatusEvent>>,
+    subagent_id: &str,
+) {
+    if let Some(status_tx) = status_tx {
+        let _ = status_tx.send(SubagentStatusEvent::ProviderRequestStarted {
+            subagent_id: subagent_id.to_string(),
+        });
+    }
 }
 
 /// Everything the dispatch branch hands over from `run_shell_child`'s
@@ -249,7 +267,7 @@ pub(super) async fn run_antigravity_subagent(
         prompt: request.prompt.clone(),
         workspace_dir: effective_cwd.clone(),
         log_file: subagent_meta_dir.join("agy.log"),
-        timeout: run_timeout(),
+        timeout: run_timeout(request.owner.is_swarm()),
         skip_permissions,
         conversation_id: inherited_conversation.clone(),
     };
@@ -259,8 +277,18 @@ pub(super) async fn run_antigravity_subagent(
         resumed_conversation = inherited_conversation.is_some(),
         "Running antigravity subagent via CLI"
     );
-    // Run the CLI while tailing its log for two best-effort side channels that
-    // never affect the run result:
+    // Antigravity never reaches the in-process StartupHints status relay.
+    // Count this swarm member as provider-ready for adaptive capacity, but do
+    // not infer typed 429s from CLI text: agy exposes no verified pause/retry
+    // contract equivalent to an in-process child session.
+    notify_swarm_provider_started(
+        request
+            .swarm
+            .as_ref()
+            .and_then(|swarm| swarm.status_tx.as_ref()),
+        &subagent_id,
+    );
+    // Run the CLI while tailing its log for two best-effort side channels:
     //  1. Quota probe — the LanguageServer binds a random HTTP port (logged
     //     within ~1s) that answers `RetrieveUserQuotaSummary` only while the
     //     run is live. We fire ONE request once the port appears and cache the
@@ -427,4 +455,25 @@ pub(super) async fn run_antigravity_subagent(
     // The coordinator actor owns terminal disposition: result delivery,
     // SubagentFinished presentation, auto-wake, and the completed registry.
     child_run_output(result, completion_data, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn antigravity_swarm_reports_provider_ready_without_retry_inference() {
+        let (status_tx, mut status_rx) = mpsc::unbounded_channel();
+        notify_swarm_provider_started(Some(&status_tx), "agy-child");
+        let event = status_rx.try_recv().expect("provider-ready event");
+        assert!(matches!(
+            event,
+            SubagentStatusEvent::ProviderRequestStarted { subagent_id }
+                if subagent_id == "agy-child"
+        ));
+
+        notify_swarm_provider_started(None, "ordinary-child");
+    }
 }

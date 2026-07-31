@@ -31,6 +31,7 @@ use crate::register_resource;
 pub enum SubagentOwner {
     #[default]
     Task,
+    Swarm,
     Workflow {
         run_id: String,
     },
@@ -45,13 +46,21 @@ impl SubagentOwner {
 
     pub fn workflow_run_id(&self) -> Option<&str> {
         match self {
-            Self::Task => None,
+            Self::Task | Self::Swarm => None,
             Self::Workflow { run_id } => Some(run_id),
         }
     }
 
+    pub fn is_swarm(&self) -> bool {
+        matches!(self, Self::Swarm)
+    }
+
     pub fn is_workflow(&self) -> bool {
         matches!(self, Self::Workflow { .. })
+    }
+
+    pub fn cancel_on_receiver_drop(&self) -> bool {
+        matches!(self, Self::Swarm | Self::Workflow { .. })
     }
 }
 

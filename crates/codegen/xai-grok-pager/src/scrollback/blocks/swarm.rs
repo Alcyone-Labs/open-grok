@@ -3,8 +3,9 @@
 //! One expandable scrollback card represents all members of a shell-reported
 //! swarm. The parent keeps child-session tracking separately, so opening a
 //! child view remains unchanged.
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::render::line_utils::truncate_str;
 use crate::scrollback::block::BlockContent;
@@ -224,18 +225,41 @@ impl SwarmBlock {
     }
 }
 
+fn swarm_identity_style(theme: &Theme, selected: bool) -> Style {
+    let style = theme
+        .fg(theme.accent_assistant)
+        .add_modifier(Modifier::BOLD);
+    if selected {
+        style.add_modifier(Modifier::UNDERLINED)
+    } else {
+        style
+    }
+}
+
+fn swarm_member_status_style(theme: &Theme, status: SwarmMemberStatus) -> Style {
+    let color = match status {
+        SwarmMemberStatus::Queued => return theme.muted(),
+        SwarmMemberStatus::Running => theme.accent_assistant,
+        SwarmMemberStatus::Waiting => theme.warning,
+        SwarmMemberStatus::Completed => theme.accent_success,
+        SwarmMemberStatus::Failed | SwarmMemberStatus::Cancelled => theme.accent_error,
+    };
+    theme.fg(color).add_modifier(Modifier::BOLD)
+}
+
 impl BlockContent for SwarmBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
         let theme = Theme::current();
-        let bold = if ctx.is_selected {
-            theme.primary().add_modifier(Modifier::BOLD)
-        } else {
-            theme.muted().add_modifier(Modifier::BOLD)
-        };
+        let purple = theme.fg(theme.accent_assistant);
+        let identity = swarm_identity_style(&theme, ctx.is_selected);
         let muted = theme.muted();
         let (completed, failed, cancelled, running, waiting, queued) = self.counts();
         let header = Line::from(vec![
-            Span::styled("Swarm ", bold),
+            Span::styled("Swarm", identity),
+            Span::styled(
+                format!(" \u{00d7}{} \u{203a} ", self.expected_members),
+                purple,
+            ),
             Span::styled(
                 format!(
                     "{} — {completed} done · {failed} failed · {cancelled} cancelled · {running} running · {waiting} waiting · {queued} queued",
@@ -250,18 +274,13 @@ impl BlockContent for SwarmBlock {
             };
         }
         let mut lines = vec![header.into()];
-        for member in &self.members {
+        for (position, member) in self.members.iter().enumerate() {
             let title = if member.item.is_empty() {
                 &member.description
             } else {
                 &member.item
             };
-            let mut detail = format!(
-                "#{} {} — {}",
-                member.index + 1,
-                truncate_str(title, ctx.width.saturating_sub(28) as usize),
-                member.status.label()
-            );
+            let mut detail = String::new();
             if let Some(turns) = member.turns {
                 detail.push_str(&format!(" · {turns} turns"));
             }
@@ -280,7 +299,32 @@ impl BlockContent for SwarmBlock {
             if let Some(activity) = member.activity.as_deref() {
                 detail.push_str(&format!(" · {activity}"));
             }
-            lines.push(Line::styled(detail, muted).into());
+            let connector = if position + 1 == self.members.len() {
+                "  \u{2514}\u{2500}"
+            } else {
+                "  \u{251c}\u{2500}"
+            };
+            let index = format!(" {:02} ", member.index + 1);
+            let reserved = connector.width()
+                + index.width()
+                + member.status.label().width()
+                + detail.width()
+                + 3;
+            let title = truncate_str(title, usize::from(ctx.width).saturating_sub(reserved));
+            lines.push(
+                Line::from(vec![
+                    Span::styled(connector, purple),
+                    Span::styled(index, identity),
+                    Span::styled(title, muted),
+                    Span::styled("  ", muted),
+                    Span::styled(
+                        member.status.label(),
+                        swarm_member_status_style(&theme, member.status),
+                    ),
+                    Span::styled(detail, muted),
+                ])
+                .into(),
+            );
         }
         BlockOutput { lines }
     }
@@ -291,9 +335,9 @@ impl BlockContent for SwarmBlock {
         if failed > 0 || cancelled > 0 {
             Some(AccentStyle::static_color(theme.accent_error))
         } else if running > 0 || waiting > 0 || queued > 0 {
-            Some(AccentStyle::static_color(theme.accent_running))
+            Some(AccentStyle::animated(theme.accent_assistant))
         } else {
-            Some(AccentStyle::static_color(theme.accent_success))
+            Some(AccentStyle::static_color(theme.accent_assistant))
         }
     }
     fn bullet(&self, ctx: &BlockContext) -> Option<AccentStyle> {
@@ -325,6 +369,23 @@ impl BlockContent for SwarmBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swarm_identity_and_states_use_purple_palette() {
+        let theme = Theme::groknight();
+        let identity = swarm_identity_style(&theme, false);
+        assert_eq!(identity.fg, Some(theme.accent_assistant));
+        assert!(identity.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            swarm_member_status_style(&theme, SwarmMemberStatus::Running).fg,
+            Some(theme.accent_assistant)
+        );
+        assert_eq!(
+            swarm_member_status_style(&theme, SwarmMemberStatus::Waiting).fg,
+            Some(theme.warning)
+        );
+    }
+
     #[test]
     fn fixed_slots_preserve_input_order_and_updates_merge() {
         let mut swarm = SwarmBlock::new("s", "review", Some(3));

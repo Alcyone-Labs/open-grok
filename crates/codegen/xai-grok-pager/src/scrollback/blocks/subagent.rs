@@ -1,19 +1,20 @@
 //! SubagentBlock — scrollback entries for subagent lifecycle.
 //!
-//! Similar to BgTaskBlock: always collapsed, animated bullet while running,
-//! colored bullet when done. Enter / Ctrl-F opens the subagent view.
+//! Similar to BgTaskBlock: always collapsed, with warm orange identity chrome,
+//! an animated orange bullet while running, and outcome colors when done.
+//! Enter / Ctrl-F opens the subagent view.
 //!
 //! Two modes:
 //! - **Blocking** (sync): Single `Started` block. Blinks while running,
 //!   turns green/red when done. Text: `Subagent "description"`
 //! - **Background** (async): `Started` block stays forever (turns gray).
 //!   A separate `Completed`/`Failed` block is added when done.
-//!   Started text: `Subagent started: "description"`
-//!   Completed text: `Subagent completed in 43s: "description"`
+//!   Started text: `Subagent [type] › started: "description"`
+//!   Completed text: `Subagent › completed in 43s: "description"`
 
 use std::time::Duration;
 
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -169,19 +170,39 @@ fn quoted_desc(desc: &str, max_width: usize) -> String {
     format!("\u{201C}{inner}\u{201D}")
 }
 
+fn subagent_identity_style(theme: &Theme, selected: bool) -> Style {
+    let style = theme.fg(theme.path).add_modifier(Modifier::BOLD);
+    if selected {
+        style.add_modifier(Modifier::UNDERLINED)
+    } else {
+        style
+    }
+}
+
+fn subagent_prefix(
+    theme: &Theme,
+    selected: bool,
+    subagent_type: &str,
+) -> (Vec<Span<'static>>, usize) {
+    let identity = theme.fg(theme.path);
+    let mut width = "Subagent".width();
+    let mut spans = vec![Span::styled(
+        "Subagent",
+        subagent_identity_style(theme, selected),
+    )];
+    if !subagent_type.is_empty() {
+        let badge = format!(" [{subagent_type}]");
+        width += badge.width();
+        spans.push(Span::styled(badge, identity));
+    }
+    width += " \u{203a} ".width();
+    spans.push(Span::styled(" \u{203a} ", identity));
+    (spans, width)
+}
+
 impl BlockContent for SubagentBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
         let theme = Theme::current();
-        // When selected, lift only the bold "Subagent" label to
-        // `text_primary` so it reads as undimmed (mirrors `read.rs` /
-        // `search.rs`, which bump only the label and leave the rest at
-        // `muted`). The detail text (verb + description + meta) stays
-        // muted in every state.
-        let bold = if ctx.is_selected {
-            theme.primary().add_modifier(Modifier::BOLD)
-        } else {
-            theme.muted().add_modifier(Modifier::BOLD)
-        };
         let muted = theme.muted();
         let w = ctx.width as usize;
 
@@ -199,14 +220,12 @@ impl BlockContent for SubagentBlock {
                     self.role.as_deref(),
                     self.model.as_deref(),
                 );
-                // "Subagent running: " / "Subagent started: " = 18 chars
-                let overhead = 18 + meta.width() + activity_suffix.width();
+                let (mut spans, prefix_width) =
+                    subagent_prefix(&theme, ctx.is_selected, &self.subagent_type);
+                let overhead = prefix_width + verb.width() + meta.width() + activity_suffix.width();
                 let desc = quoted_desc(&self.description, w.saturating_sub(overhead));
-                let mut spans = vec![
-                    Span::styled("Subagent ", bold),
-                    Span::styled(verb, muted),
-                    Span::styled(desc, muted),
-                ];
+                spans.push(Span::styled(verb, muted));
+                spans.push(Span::styled(desc, muted));
                 if !activity_suffix.is_empty() {
                     spans.push(Span::styled(activity_suffix, muted));
                 }
@@ -216,14 +235,14 @@ impl BlockContent for SubagentBlock {
             // Completed: Subagent completed in Xs: "description"
             (SubagentBlockKind::Completed { elapsed }, _) => {
                 let time_str = format_duration(*elapsed);
-                // "Subagent completed in Xs: " = 26 + time_str.len()
-                let prefix_len = 26 + time_str.len();
+                let detail = format!("completed in {time_str}: ");
+                let (mut spans, prefix_width) =
+                    subagent_prefix(&theme, ctx.is_selected, &self.subagent_type);
+                let prefix_len = prefix_width + detail.width();
                 let desc = quoted_desc(&self.description, w.saturating_sub(prefix_len));
-                Line::from(vec![
-                    Span::styled("Subagent ", bold),
-                    Span::styled(format!("completed in {time_str}: "), muted),
-                    Span::styled(desc, muted),
-                ])
+                spans.push(Span::styled(detail, muted));
+                spans.push(Span::styled(desc, muted));
+                Line::from(spans)
             }
             // Failed: Subagent failed in Xs: "description"
             (SubagentBlockKind::Failed { elapsed, error }, _) => {
@@ -232,25 +251,26 @@ impl BlockContent for SubagentBlock {
                     .as_deref()
                     .map(|e| format!(" ({e})"))
                     .unwrap_or_default();
-                let prefix_len = 21 + time_str.len() + detail.len();
+                let status = format!("failed in {time_str}{detail}: ");
+                let (mut spans, prefix_width) =
+                    subagent_prefix(&theme, ctx.is_selected, &self.subagent_type);
+                let prefix_len = prefix_width + status.width();
                 let desc = quoted_desc(&self.description, w.saturating_sub(prefix_len));
-                Line::from(vec![
-                    Span::styled("Subagent ", bold),
-                    Span::styled(format!("failed in {time_str}{detail}: "), muted),
-                    Span::styled(desc, muted),
-                ])
+                spans.push(Span::styled(status, muted));
+                spans.push(Span::styled(desc, muted));
+                Line::from(spans)
             }
             // Cancelled: Subagent cancelled in Xs: "description"
             (SubagentBlockKind::Cancelled { elapsed }, _) => {
                 let time_str = format_duration(*elapsed);
-                // "Subagent cancelled in Xs: " = 26 + time_str.len()
-                let prefix_len = 26 + time_str.len();
+                let detail = format!("cancelled in {time_str}: ");
+                let (mut spans, prefix_width) =
+                    subagent_prefix(&theme, ctx.is_selected, &self.subagent_type);
+                let prefix_len = prefix_width + detail.width();
                 let desc = quoted_desc(&self.description, w.saturating_sub(prefix_len));
-                Line::from(vec![
-                    Span::styled("Subagent ", bold),
-                    Span::styled(format!("cancelled in {time_str}: "), muted),
-                    Span::styled(desc, muted),
-                ])
+                spans.push(Span::styled(detail, muted));
+                spans.push(Span::styled(desc, muted));
+                Line::from(spans)
             }
         };
 
@@ -263,7 +283,7 @@ impl BlockContent for SubagentBlock {
         let theme = Theme::current();
         match &self.kind {
             SubagentBlockKind::Started if ctx.is_running => {
-                Some(AccentStyle::static_color(theme.accent_running))
+                Some(AccentStyle::static_color(theme.path))
             }
             _ => None,
         }
@@ -275,8 +295,7 @@ impl BlockContent for SubagentBlock {
             SubagentBlockKind::Started => {
                 if ctx.is_running {
                     let dim = ctx.appearance.scrollback.display.dim_accent;
-                    let dimmed = blend_color(theme.bg_base, theme.accent_running, dim)
-                        .unwrap_or(theme.accent_running);
+                    let dimmed = blend_color(theme.bg_base, theme.path, dim).unwrap_or(theme.path);
                     Some(AccentStyle::animated(dimmed))
                 } else {
                     // Finished — gray bullet (same as bg task "started" after completion)
@@ -318,5 +337,25 @@ impl BlockContent for SubagentBlock {
 
     fn is_groupable(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subagent_identity_uses_warm_theme_color() {
+        let theme = Theme::groknight();
+        let style = subagent_identity_style(&theme, false);
+        assert_eq!(style.fg, Some(theme.path));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+
+        let (spans, width) = subagent_prefix(&theme, true, "explore");
+        assert_eq!(spans[0].content.as_ref(), "Subagent");
+        assert_eq!(spans[1].content.as_ref(), " [explore]");
+        assert_eq!(spans[2].content.as_ref(), " \u{203a} ");
+        assert_eq!(width, "Subagent [explore] \u{203a} ".width());
+        assert!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED));
     }
 }
