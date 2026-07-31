@@ -5,13 +5,14 @@ use crate::config::{AGENT_TASK_CLASSIFIER_RE, short_tool_name, tool_id_eq, tool_
 use crate::config::{AgentDefinition, BuiltinAgentName, PermissionMode, PromptMode};
 use crate::discovery::{SubagentEntry, SubagentSource};
 use crate::error::AgentBuildError;
-use crate::prompt::context::PromptContext;
+use crate::prompt::context::{PromptAudience, PromptContext};
 use crate::system_reminder::ReminderPolicy;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use xai_grok_tools::bridge::ToolBridge;
 use xai_grok_tools::computer::types::{AsyncFileSystem, TerminalBackend};
+use xai_grok_tools::implementations::grok_build::task::types::strip_plan_mode_tools;
 use xai_grok_tools::notification::ToolNotificationHandle;
 use xai_grok_tools::registry::types::SessionContext;
 use xai_grok_tools::types::tool::ToolKind;
@@ -780,6 +781,11 @@ impl AgentBuilder {
                     .push((&xai_grok_tools::implementations::opencode::OpenCodeWriteTool).into());
             }
             ensure_plan_mode_tools(&mut tool_config);
+        }
+        // Child plan approval renders on the parent view. Keep this guard after
+        // default-tool injection so rebuilding a child cannot restore the tools.
+        if self.prompt_audience == PromptAudience::Subagent {
+            strip_plan_mode_tools(&mut tool_config);
         }
         if self.memory_backend.is_none() {
             let grok_build_ns = xai_grok_tools::types::tool::ToolNamespace::GrokBuild.to_string();
@@ -1609,6 +1615,7 @@ mod tests {
         profile: crate::config::AgentDefinition,
         subagents_enabled: bool,
         ask_user_question_enabled: bool,
+        prompt_audience: PromptAudience,
     ) -> crate::agent::Agent {
         use xai_grok_tools::computer::local::LocalTerminalBackend;
         use xai_grok_tools::notification::ToolNotificationHandle;
@@ -1620,9 +1627,34 @@ mod tests {
         .from_definition(profile)
         .with_subagents_enabled(subagents_enabled)
         .with_ask_user_question_enabled(ask_user_question_enabled)
+        .with_prompt_audience(prompt_audience)
         .build()
         .await
         .expect("agent should build for every pager-reachable flag combination")
+    }
+    #[tokio::test]
+    async fn subagent_audience_strips_plan_mode_after_default_injection() {
+        for profile in [
+            crate::config::AgentDefinition::explore(),
+            crate::config::AgentDefinition::codex(),
+        ] {
+            let label = profile.name.clone();
+            let agent = build_pager_agent(profile, false, true, PromptAudience::Subagent).await;
+            let definitions = agent.tool_definitions().await;
+            let names: Vec<&str> = definitions
+                .iter()
+                .map(|definition| definition.function.name.as_str())
+                .collect();
+
+            assert!(
+                !names.contains(&"enter_plan_mode") && !names.contains(&"exit_plan_mode"),
+                "[{label}] subagent must not expose plan-mode lifecycle tools: {names:?}"
+            );
+            assert!(
+                names.contains(&"ask_user_question"),
+                "[{label}] stripping plan mode must preserve independently enabled ask-user: {names:?}"
+            );
+        }
     }
     #[tokio::test]
     async fn pager_flag_combinations_satisfy_tool_invariants() {
@@ -1702,7 +1734,8 @@ mod tests {
                 subagents,
                 ask_user,
             } = case;
-            let agent = build_pager_agent(profile(), *subagents, *ask_user).await;
+            let agent =
+                build_pager_agent(profile(), *subagents, *ask_user, PromptAudience::Primary).await;
             let defs = agent.tool_definitions().await;
             let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
             let mut counts: std::collections::HashMap<&str, usize> =
