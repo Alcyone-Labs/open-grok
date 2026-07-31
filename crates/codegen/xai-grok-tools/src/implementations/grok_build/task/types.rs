@@ -227,6 +227,12 @@ pub enum ModelOverrideProvenance {
 
 #[derive(Debug, Clone, Default)]
 pub struct SubagentRuntimeOverrides {
+    /// Prevent an agent definition's `background: true` default from changing
+    /// this request into a background task. Explicit foreground callers use
+    /// this to retain a single parent-turn lifecycle and cancellation scope.
+    /// Ordinary Task-tool requests leave this `false` and preserve the role
+    /// default behavior.
+    pub force_foreground: bool,
     /// Override the model (e.g. "test-model").
     pub model: Option<String>,
     /// Whether `model` came from a model-facing Task call or internal harness logic.

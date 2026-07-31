@@ -168,6 +168,7 @@ All frontmatter keys use **camelCase**.
 | `name` | `string` | **Yes** | — | Unique agent ID (lowercase, hyphens) |
 | `description` | `string` | **Yes** | — | When/why to use this agent |
 | `promptMode` | `string` | No | `"extend"` | `"extend"` or `"full"` |
+| `model` | `string` | No | `"inherit"` | Sampling pin: `"inherit"` (parent model) or a concrete model id |
 | `tools` | `string[]` | No | inherit all | Tool allowlist. Omit = all tools. `[]` = none |
 | `disallowedTools` | `string[]` | No | `[]` | Denylist (takes priority over `tools`) |
 | `permissionMode` | `string` | No | `"default"` | `"default"`, `"acceptEdits"`, `"dontAsk"`, `"plan"` |
@@ -208,7 +209,7 @@ promptMode: extend                     promptMode: full
 |---|---|
 | `${{ tools.read_file }}` | Resolved name for `read_file` (or empty if disabled) |
 | `${{ tools.search_replace }}` | Resolved name for `search_replace` |
-| `${{ tools.run_terminal_cmd }}` | Resolved name for `run_terminal_cmd` |
+| `${{ tools.run_terminal_cmd }}` | Resolved name for `run_terminal_cmd` (frontmatter id; model-facing body name is often `run_terminal_command`) |
 | `${{ tools.grep }}` | Resolved name for `grep` |
 | `${{ tools.list_dir }}` | Resolved name for `list_dir` |
 | `${{ tools.todo_write }}` | Resolved name for `todo_write` |
@@ -277,6 +278,41 @@ user-level definition with the same name.
 |---|---|---|
 | `grok-build` | extend | Default agent for software engineering tasks |
 | `browser-use` | full | Web browsing and interaction agent |
+
+Built-in **specialist** variants used as child agents (for example `explore`,
+`plan`, `general-purpose`) are part of the specialist catalog. Generic primary
+profiles such as `grok-build` remain valid session/harness agents but are not
+Task specialists unless also present in that catalog.
+
+## Model affinity
+
+Agent markdown can pin the sampler with frontmatter `model:`:
+
+```markdown
+---
+name: my-specialist
+description: Focused worker
+model: grok-3-fast   # or "inherit"
+---
+```
+
+When the definition runs as a **child specialist**, effective model resolution
+is:
+
+1. Host/runtime override (if any)
+2. `[subagents.models].<agent>` in `~/.opengrok/config.toml` or project config
+3. This frontmatter `model:` value when it is a concrete id
+4. Parent session model
+
+Unknown ids in frontmatter or `[subagents.models]` warn and fall through.
+Unknown model ids passed on the model-facing Task / `spawn_subagent` `model`
+argument fail with `invalid_arguments`.
+
+### Tool name surfaces
+
+- **Prompt body / model-facing tools:** `spawn_subagent`, `run_terminal_command`
+- **Frontmatter `tools` / `disallowedTools` / permissions:** `task`,
+  `run_terminal_cmd`, `Agent(...)`
 
 ## Error Handling
 

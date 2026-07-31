@@ -347,6 +347,29 @@ mod tests {
     }
 
     #[test]
+    fn advertised_specialist_command_passes_through_with_full_task() {
+        // `/specialist` is owned by the shell session actor. The pager's ACP
+        // registry must retain its argument text verbatim so the shell can
+        // apply the canonical eligibility and foreground lifecycle contract.
+        let cmd = AcpSlashCommand::from(
+            &acp::AvailableCommand::new(
+                "specialist",
+                "Run an eligible specialist as a foreground task",
+            )
+            .input(acp::AvailableCommandInput::Unstructured(
+                acp::UnstructuredCommandInput::new("<name> <task>"),
+            )),
+        );
+        let mut ctx = make_exec_ctx();
+        let result = cmd.run(&mut ctx, "explore inspect @src/lib.rs");
+        assert!(matches!(
+            result,
+            CommandResult::PassThrough(text)
+            if text == "/specialist explore inspect @src/lib.rs"
+        ));
+    }
+
+    #[test]
     fn run_malformed_meta_returns_error() {
         let cmd = AcpSlashCommand {
             name: "broken".to_string(),

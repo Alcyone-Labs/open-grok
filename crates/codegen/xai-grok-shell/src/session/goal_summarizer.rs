@@ -173,6 +173,7 @@ impl ChannelSpawner {
             resume_from: None,
             cwd: self.cwd.clone(),
             runtime_overrides: SubagentRuntimeOverrides {
+                force_foreground: false,
                 model,
                 harness_agent_type,
                 capability_mode: Some(SubagentCapabilityMode::ReadOnly),

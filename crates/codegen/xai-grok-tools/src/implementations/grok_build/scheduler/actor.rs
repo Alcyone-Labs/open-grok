@@ -666,6 +666,7 @@ impl SchedulerActor {
             resume_from,
             cwd: None,
             runtime_overrides: SubagentRuntimeOverrides {
+                force_foreground: false,
                 completion_output_cap: Some(LOOP_COMPLETION_OUTPUT_CAP),
                 spawn_depth: Some(0),
                 loop_task_id: Some(task_id.to_string()),

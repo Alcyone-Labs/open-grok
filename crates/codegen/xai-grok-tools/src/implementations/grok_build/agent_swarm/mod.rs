@@ -718,6 +718,7 @@ fn build_member_request(
         // Resumed members keep their prior model; the override applies to
         // new members only (mirrors the task tool's soft-ignore on resume).
         runtime_overrides: SubagentRuntimeOverrides {
+            force_foreground: false,
             model: member
                 .resume_from
                 .is_none()

@@ -256,7 +256,7 @@ pub(crate) async fn run_shell_child(
         request.subagent_type = source.subagent_type.clone();
         request.runtime_overrides.persona = source.persona.clone();
     }
-    let Some(mut definition) = resolve_agent_definition(&request.subagent_type, &ctx) else {
+    let Some(mut definition) = resolve_specialist_definition(&request.subagent_type, &ctx) else {
         let msg = format!("Unknown subagent type: {}", request.subagent_type);
         return child_run_output(failure_result(&request, &msg), completion_data, None);
     };
@@ -1381,6 +1381,9 @@ pub(crate) async fn run_shell_child(
         resolved_tool_policy_override,
         true,
         subagent_session_default_agent_profile,
+        ctx.agent_config
+            .as_ref()
+            .map_or_else(Vec::new, |cfg| cfg.cli_agents.clone()),
         if inherit_skills {
             ctx.parent_skills_config.clone()
         } else {

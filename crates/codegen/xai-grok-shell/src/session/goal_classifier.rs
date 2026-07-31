@@ -612,6 +612,7 @@ impl ChannelSpawner {
             resume_from: resume_from.map(str::to_string),
             cwd: self.cwd.clone(),
             runtime_overrides: SubagentRuntimeOverrides {
+                force_foreground: false,
                 model,
                 harness_agent_type,
                 ..Default::default()

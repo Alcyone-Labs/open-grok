@@ -221,19 +221,16 @@ impl MvpAgent {
                 ps.and_then(|h| h.allowed_subagent_types.clone()),
             )
         };
-        let (cli_agent_names, subagent_toggle) = {
+        let (cli_agents, subagent_toggle) = {
             let cfg = self.cfg.borrow();
-            (
-                cfg.cli_agents.iter().map(|d| d.name.clone()).collect(),
-                cfg.subagent_toggle.clone(),
-            )
+            (cfg.cli_agents.clone(), cfg.subagent_toggle.clone())
         };
         crate::agent::subagent::SubagentValidationContext {
             parent_cwd,
             plugin_registry: self.plugin_registry_handle.snapshot(),
             subagent_toggle,
             allowed_subagent_types,
-            cli_agent_names,
+            cli_agents,
         }
     }
     /// Test-only infallible wrapper around

@@ -50,6 +50,14 @@ pub(crate) enum BuiltinGate {
 /// All built-in slash commands. Order here = display order in autocomplete.
 pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     BuiltinCommand {
+        name: "specialist",
+        description: "Run an eligible specialist as a foreground task",
+        argument_hint: Some("<name> <task>"),
+        aliases: &[],
+        gate: BuiltinGate::AlwaysOn,
+        resolve: |args| BuiltinAction::Specialist(parse_specialist_invocation(args)),
+    },
+    BuiltinCommand {
         name: "compact",
         description: "Compress conversation history to save context window",
         argument_hint: Some("optional context about what to preserve"),
@@ -810,6 +818,7 @@ pub(super) enum SlashCommandOutcome {
 
 #[derive(Debug)]
 pub(super) enum BuiltinAction {
+    Specialist(Result<SpecialistInvocation, SpecialistInvocationParseError>),
     Compact {
         user_context: Option<String>,
     },
@@ -881,9 +890,69 @@ pub(super) enum BuiltinAction {
     },
 }
 
+/// Explicit user request for one foreground specialist task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpecialistInvocation {
+    pub name: String,
+    pub task: String,
+}
+
+/// User-correctable parse errors for `/specialist` before catalog validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SpecialistInvocationParseError {
+    MissingName,
+    MissingTask { name: String },
+    MalformedName { name: String },
+}
+
+/// Parse the deliberately narrow `/specialist <name> <task>` grammar.
+///
+/// Names retain the existing unqualified and `plugin:name` forms.  We only
+/// reject syntax that cannot name a catalog entry, leaving discovery and all
+/// eligibility policy to the SPC-004 coordinator path.
+pub(crate) fn parse_specialist_invocation(
+    args: &str,
+) -> Result<SpecialistInvocation, SpecialistInvocationParseError> {
+    let trimmed = args.trim();
+    let Some((name, task)) = trimmed
+        .split_once(char::is_whitespace)
+        .map(|(name, task)| (name, task.trim()))
+    else {
+        return if trimmed.is_empty() {
+            Err(SpecialistInvocationParseError::MissingName)
+        } else {
+            Err(SpecialistInvocationParseError::MissingTask {
+                name: trimmed.to_string(),
+            })
+        };
+    };
+
+    if name.is_empty()
+        || name.starts_with(':')
+        || name.ends_with(':')
+        || name.matches(':').count() > 1
+        || name.contains('/')
+        || name.chars().any(char::is_control)
+    {
+        return Err(SpecialistInvocationParseError::MalformedName {
+            name: name.to_string(),
+        });
+    }
+    if task.is_empty() {
+        return Err(SpecialistInvocationParseError::MissingTask {
+            name: name.to_string(),
+        });
+    }
+    Ok(SpecialistInvocation {
+        name: name.to_string(),
+        task: task.to_string(),
+    })
+}
+
 impl BuiltinAction {
     pub(crate) fn command_name(&self) -> &'static str {
         match self {
+            BuiltinAction::Specialist(_) => "specialist",
             BuiltinAction::Compact { .. } => "compact",
             BuiltinAction::SetYolo { .. } => "yolo",
             BuiltinAction::ToggleSwarm | BuiltinAction::SetSwarm { .. } => "swarm",
@@ -920,6 +989,8 @@ impl BuiltinAction {
 
     pub(crate) fn args_provided(&self) -> bool {
         match self {
+            BuiltinAction::Specialist(Ok(_)) => true,
+            BuiltinAction::Specialist(Err(_)) => false,
             BuiltinAction::Compact { user_context } => user_context.is_some(),
             BuiltinAction::SetYolo { .. } => true,
             BuiltinAction::ToggleSwarm => false,
@@ -1442,6 +1513,66 @@ mod tests {
     }
 
     #[test]
+    fn specialist_parses_name_and_task_without_touching_at_syntax() {
+        assert_eq!(
+            parse_specialist_invocation("reviewer inspect @src/lib.rs"),
+            Ok(SpecialistInvocation {
+                name: "reviewer".to_string(),
+                task: "inspect @src/lib.rs".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_specialist_invocation("plugin:reviewer check the patch"),
+            Ok(SpecialistInvocation {
+                name: "plugin:reviewer".to_string(),
+                task: "check the patch".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn specialist_reports_distinct_parse_errors() {
+        assert_eq!(
+            parse_specialist_invocation(""),
+            Err(SpecialistInvocationParseError::MissingName)
+        );
+        assert_eq!(
+            parse_specialist_invocation("reviewer"),
+            Err(SpecialistInvocationParseError::MissingTask {
+                name: "reviewer".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_specialist_invocation("bad/name do work"),
+            Err(SpecialistInvocationParseError::MalformedName {
+                name: "bad/name".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn specialist_is_advertised_and_resolves_as_a_builtin() {
+        assert!(
+            available_commands(&[], CommandAvailability::default(), &[])
+                .iter()
+                .any(|command| command.name == "specialist")
+        );
+        let outcome = resolve(
+            vec![text_block("/specialist explore inspect src")],
+            &[],
+            CommandAvailability::default(),
+            SkillSlashRewrite::default(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            outcome,
+            SlashCommandOutcome::Builtin(BuiltinAction::Specialist(Ok(SpecialistInvocation { name, task })))
+            if name == "explore" && task == "inspect src"
+        ));
+    }
+
+    #[test]
     fn always_approve_parses_on_off() {
         for arg in ["", "on", "true", "1", "yes", "enable"] {
             assert!(
@@ -1790,6 +1921,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "specialist",
                 "compact",
                 "always-approve",
                 "flush",

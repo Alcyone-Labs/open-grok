@@ -162,6 +162,7 @@ pub(crate) struct AgentRebuildSpec {
     pub subagents_enabled: bool,
     pub subagent_toggle: HashMap<String, bool>,
     pub background_workflows_enabled: bool,
+    pub additional_subagents: Vec<AgentDefinition>,
     pub ask_user_question_enabled: bool,
     pub persona_summaries: Vec<String>,
     pub prompt_audience: PromptAudience,
@@ -281,6 +282,7 @@ impl AgentRebuildSpec {
             subagents_enabled,
             subagent_toggle,
             background_workflows_enabled,
+            additional_subagents,
             ask_user_question_enabled,
             persona_summaries,
             prompt_audience,
@@ -349,6 +351,7 @@ impl AgentRebuildSpec {
         .with_subagents_enabled(*subagents_enabled)
         .with_subagent_toggle(subagent_toggle.clone())
         .with_background_workflows_enabled(*background_workflows_enabled)
+        .with_additional_subagents(additional_subagents.clone())
         .with_task_model_slugs({
             let mut slugs = models_manager
                 .available()
@@ -544,6 +547,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         subagents_enabled: false,
         subagent_toggle: HashMap::new(),
         background_workflows_enabled: false,
+        additional_subagents: vec![],
         ask_user_question_enabled: true,
         persona_summaries: vec![],
         prompt_audience: PromptAudience::Primary,

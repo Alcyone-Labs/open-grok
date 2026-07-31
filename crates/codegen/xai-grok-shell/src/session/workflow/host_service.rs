@@ -431,6 +431,7 @@ impl HostService {
                     resume_from,
                     cwd: None,
                     runtime_overrides: SubagentRuntimeOverrides {
+                        force_foreground: false,
                         model: opts.model.clone(),
                         reasoning_effort: reasoning_effort.clone(),
                         output_token_budget: None,

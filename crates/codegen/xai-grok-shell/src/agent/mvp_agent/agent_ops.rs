@@ -4063,6 +4063,10 @@ impl MvpAgent {
                     resolved_tool_policy_override,
                     persist_initial_model,
                     session_default_agent_profile,
+                    {
+                        let cfg = self.cfg.borrow();
+                        cfg.cli_agents.clone()
+                    },
                     skills,
                     None,
                     compat,

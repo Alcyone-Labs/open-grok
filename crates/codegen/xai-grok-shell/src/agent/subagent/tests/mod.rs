@@ -605,6 +605,7 @@ fn kimi_subagent_spawn_refresh_fails_without_a_live_key() {
 }
 fn explicit_override_takes_precedence_over_role() {
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         model: Some("explicit-model".into()),
         capability_mode: Some(xai_tool_types::SubagentCapabilityMode::All),
         ..Default::default()
@@ -667,6 +668,7 @@ fn no_role_no_override_returns_none() {
 #[test]
 fn partial_override_fills_from_role() {
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         model: Some("explicit-model".into()),
         ..Default::default()
     };
@@ -691,6 +693,7 @@ fn partial_override_fills_from_role() {
 #[test]
 fn reasoning_effort_explicit_overrides_role() {
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         reasoning_effort: Some("high".into()),
         ..Default::default()
     };
@@ -748,6 +751,7 @@ fn invalid_role_capability_mode_ignored() {
 #[test]
 fn persona_resolved_from_config() {
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         persona: Some("researcher".into()),
         ..Default::default()
     };
@@ -770,6 +774,7 @@ fn persona_resolved_from_config() {
 #[test]
 fn unknown_persona_produces_no_instructions() {
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         persona: Some("nonexistent".into()),
         ..Default::default()
     };
@@ -788,6 +793,7 @@ fn persona_inline_plus_file_merged_in_order() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join("extra.md"), "File-based content.").unwrap();
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         persona: Some("combo".into()),
         ..Default::default()
     };
@@ -835,6 +841,7 @@ fn model_precedence_explicit_over_role_over_persona() {
         ..Default::default()
     };
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         persona: Some("dev".into()),
         model: Some("explicit-model".into()),
         ..Default::default()
@@ -842,6 +849,7 @@ fn model_precedence_explicit_over_role_over_persona() {
     let r = resolve_effective_overrides(&overrides, Some(&role), &personas, None, None);
     assert_eq!(r.model.as_deref(), Some("explicit-model"));
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         persona: Some("dev".into()),
         ..Default::default()
     };
@@ -880,6 +888,7 @@ fn reasoning_effort_precedence_explicit_over_role_over_persona() {
         ..Default::default()
     };
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         persona: Some("dev".into()),
         reasoning_effort: Some("high".into()),
         ..Default::default()
@@ -887,6 +896,7 @@ fn reasoning_effort_precedence_explicit_over_role_over_persona() {
     let r = resolve_effective_overrides(&overrides, Some(&role), &personas, None, None);
     assert_eq!(r.reasoning_effort.as_deref(), Some("high"));
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         persona: Some("dev".into()),
         ..Default::default()
     };
@@ -911,6 +921,7 @@ fn reasoning_effort_precedence_explicit_over_role_over_persona() {
 #[test]
 fn persona_not_found_produces_error() {
     let overrides = SubagentRuntimeOverrides {
+        force_foreground: false,
         persona: Some("missing".into()),
         ..Default::default()
     };
@@ -1560,6 +1571,16 @@ fn make_validation_ctx(toggle: HashMap<String, bool>) -> SubagentValidationConte
         ..Default::default()
     }
 }
+fn set_validation_cli_agents(ctx: &mut SubagentValidationContext, names: &[&str]) {
+    ctx.cli_agents = names
+        .iter()
+        .map(|name| {
+            let mut definition = xai_grok_agent::config::AgentDefinition::general_purpose();
+            definition.name = (*name).to_string();
+            definition
+        })
+        .collect();
+}
 #[test]
 fn validate_subagent_type_returns_ok_for_known_enabled_agent() {
     let ctx = make_validation_ctx(HashMap::new());
@@ -1586,6 +1607,19 @@ fn validate_subagent_type_returns_unknown_for_invented_type() {
             assert_eq!(available, sorted, "available must be sorted");
         }
         other => panic!("expected Unknown, got {other:?}"),
+    }
+}
+#[test]
+fn validate_subagent_type_rejects_generic_top_level_profiles() {
+    let ctx = make_validation_ctx(HashMap::new());
+    for profile in ["codex", "grok-build", "opencode"] {
+        assert!(
+            matches!(
+                validate_subagent_type(profile, &ctx),
+                SubagentValidateTypeOutcome::Unknown { .. }
+            ),
+            "top-level profile {profile:?} must not become a specialist through direct lookup"
+        );
     }
 }
 #[test]
@@ -1619,7 +1653,7 @@ fn validate_subagent_type_allow_list_is_case_insensitive() {
         ("explore", vec!["plan".to_string(), "EXPLORE".to_string()]),
     ] {
         let mut ctx = make_validation_ctx(HashMap::new());
-        ctx.cli_agent_names = vec![requested.to_string()];
+        set_validation_cli_agents(&mut ctx, &[requested]);
         ctx.allowed_subagent_types = Some(allowed.clone());
         assert!(
                 matches!(
@@ -1633,7 +1667,7 @@ fn validate_subagent_type_allow_list_is_case_insensitive() {
 #[test]
 fn validate_subagent_type_unknown_includes_cli_agents_in_available() {
     let mut ctx = make_validation_ctx(HashMap::new());
-    ctx.cli_agent_names = vec!["user-defined-agent".to_string()];
+    set_validation_cli_agents(&mut ctx, &["user-defined-agent"]);
     match validate_subagent_type("invented", &ctx) {
         SubagentValidateTypeOutcome::Unknown { available } => {
             assert!(
@@ -1647,7 +1681,7 @@ fn validate_subagent_type_unknown_includes_cli_agents_in_available() {
 #[test]
 fn validate_subagent_type_unknown_dedupes_cli_against_builtins() {
     let mut ctx = make_validation_ctx(HashMap::new());
-    ctx.cli_agent_names = vec!["explore".to_string()];
+    set_validation_cli_agents(&mut ctx, &["explore"]);
     match validate_subagent_type("invented", &ctx) {
         SubagentValidateTypeOutcome::Unknown { available } => {
             let count = available.iter().filter(|n| n.as_str() == "explore").count();
@@ -1678,7 +1712,7 @@ fn validate_subagent_type_unknown_omits_disabled_types_from_available_list() {
 fn validate_subagent_type_unknown_omits_disabled_cli_agents_from_available_list() {
     let toggle = HashMap::from([("custom".to_string(), false)]);
     let mut ctx = make_validation_ctx(toggle);
-    ctx.cli_agent_names = vec!["custom".to_string(), "user-defined".to_string()];
+    set_validation_cli_agents(&mut ctx, &["custom", "user-defined"]);
     match validate_subagent_type("invented", &ctx) {
         SubagentValidateTypeOutcome::Unknown { available } => {
             assert!(
@@ -1696,12 +1730,14 @@ fn validate_subagent_type_unknown_omits_disabled_cli_agents_from_available_list(
 #[test]
 fn validate_subagent_type_recognizes_cli_agent_by_name() {
     let mut ctx = make_validation_ctx(HashMap::new());
-    ctx.cli_agent_names = vec!["user-defined".to_string()];
+    set_validation_cli_agents(&mut ctx, &["user-defined"]);
     assert!(matches!(
-            validate_subagent_type("user-defined", &ctx),
-            SubagentValidateTypeOutcome::Ok,
-        ));
+        validate_subagent_type("user-defined", &ctx),
+        SubagentValidateTypeOutcome::Ok,
+    ));
 }
+
+
 #[test]
 fn summarize_tool_config_uses_name_override_and_strips_namespace() {
     use xai_grok_tools::registry::types::{ToolConfig, ToolServerConfig};

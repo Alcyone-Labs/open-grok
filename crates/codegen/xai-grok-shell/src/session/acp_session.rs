@@ -1397,6 +1397,9 @@ mod client_hooks_tests;
 #[path = "acp_session_tests/replace_system_prompt_tests.rs"]
 mod replace_system_prompt_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/specialist_slash_tests.rs"]
+mod specialist_slash_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/support.rs"]
 mod support;
 #[cfg(test)]
