@@ -2212,7 +2212,7 @@ fn format_session_info_api_key_without_env() {
             "{text}"
         );
     assert!(
-            text.contains("Run `grok login` to use your SuperGrok subscription instead."),
+            text.contains("Run `open-grok login` to use your SuperGrok subscription instead."),
             "{text}"
         );
     assert!(!text.contains("grok.com"), "{text}");
@@ -2227,7 +2227,7 @@ fn format_session_info_api_key_auth_notes_console_billing() {
             "{text}"
         );
     assert!(
-            text.contains("Run `grok login` to use your SuperGrok subscription instead."),
+            text.contains("Run `open-grok login` to use your SuperGrok subscription instead."),
             "{text}"
         );
     assert!(!text.contains("Also present: XAI_API_KEY"), "{text}");
@@ -2253,6 +2253,24 @@ fn format_session_info_shows_conversation_id_when_present() {
     let text = format_session_info(&info, None, false, false, false);
     assert!(text.contains("Conversation ID: conv_abc123"));
     assert!(text.contains("Session ID: test-session-id"));
+}
+
+#[test]
+fn format_session_info_shows_agent_and_persona_hint() {
+    let mut info = make_session_info("auto", None, 1000, 10000);
+    info.data.agent_name = Some("mecha-builder".into());
+    let text = format_session_info(&info, None, false, false, false);
+    assert!(text.contains("Agent: mecha-builder"), "{text}");
+    assert!(text.contains("not a persona"), "{text}");
+    assert!(text.contains("/agents"), "{text}");
+    assert!(text.contains("/personas"), "{text}");
+}
+
+#[test]
+fn format_session_info_default_agent_when_unnamed() {
+    let info = make_session_info("auto", None, 1000, 10000);
+    let text = format_session_info(&info, None, false, false, false);
+    assert!(text.contains("Agent: (default session profile)"), "{text}");
 }
 #[test]
 fn format_session_info_shows_resolved_when_enabled_and_different() {

@@ -3,7 +3,7 @@
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
 
-/// Show session info (session ID, cwd, model, context usage).
+/// Show session info (agent, model, auth, cwd) (session ID, cwd, model, context usage).
 pub struct SessionInfoCommand;
 
 impl SlashCommand for SessionInfoCommand {
@@ -12,7 +12,7 @@ impl SlashCommand for SessionInfoCommand {
     }
 
     fn description(&self) -> &str {
-        "Show session info"
+        "Show session info (agent, model, auth, cwd)"
     }
 
     fn session_scoped(&self) -> bool {

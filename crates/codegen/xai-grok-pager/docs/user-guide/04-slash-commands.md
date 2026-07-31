@@ -41,7 +41,12 @@ Show how the context window is being used: a category breakdown (system prompt, 
 
 ### `/session-info`
 
-Show session details — auth method, model, turn count, and context usage. Aliases: `/status`, `/info`.
+Show session details — **active agent** (session profile), auth method, model,
+turn count, and context usage. Aliases: `/status`, `/info`.
+
+The **Agent** line is the primary-session profile (for example `mecha-builder`
+or the built-in default). It is not a persona. Personas only apply to child
+subagents; manage them with `/personas`.
 
 ### `/fork`
 
@@ -392,7 +397,12 @@ Open the Claude import modal to bring over `~/.claude` settings: permissions, en
 
 ### `/config-agents`
 
-Open the agents modal to view and manage agent definitions, set the default, and switch the active one. Alias: `/agents`.
+Open the agents modal to view and manage **agent definitions** (session
+profiles), set the default, and switch the active one. Alias: `/agents`.
+
+This is how you change the primary-session agent (for example to
+`mecha-builder`). It is separate from `/personas`, which only manages
+subagent overlays.
 
 Not the live multi-session [Agent Dashboard](23-dashboard.md) (`/dashboard` / `Ctrl+\`).
 
@@ -414,7 +424,12 @@ The specialist may pin a model via agent markdown `model:` or
 
 ### `/personas`
 
-Create, edit, and delete personas. A subagent can apply a persona to shape how it behaves.
+Create, edit, and delete **persona definitions**. Personas are behavioral
+overlays for **subagents only** — they do not change the primary session.
+
+To change who is driving the main chat, use `/agents` (or start with
+`open-grok --agent <name>`). To see the active session agent and model, use
+`/session-info`.
 
 ---
 

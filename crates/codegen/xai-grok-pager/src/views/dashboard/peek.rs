@@ -505,6 +505,7 @@ fn paint_peek_config_badge(
         return;
     }
     let info = PromptInfo {
+        agent_name: None,
         model_name: &model_label,
         flags: &flags,
         multiline,

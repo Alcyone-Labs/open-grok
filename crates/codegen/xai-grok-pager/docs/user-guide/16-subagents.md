@@ -23,6 +23,18 @@ An agent defines the session itself. A persona shapes how a subagent behaves wit
 
 Manage both in the agents modal. Open it with `/config-agents` (alias `/agents`), or open the Personas tab directly with `/personas`. The modal has two tabs: **Agents** and **Personas**.
 
+### See what you are running
+
+| Question | Command |
+| --- | --- |
+| Active **session agent** (primary profile) | `/session-info` (Agent line) or `/agents` |
+| Active **model** | Prompt footer, or `/session-info` / `/model` |
+| Persona on the main chat | None — personas do not apply to the primary session |
+| Persona library | `/personas` (edit definitions only) |
+
+The prompt footer shows `agent:<name> · <model>` when the session agent name is known.
+
+
 ---
 
 ## Specialists: Primary Session vs Child

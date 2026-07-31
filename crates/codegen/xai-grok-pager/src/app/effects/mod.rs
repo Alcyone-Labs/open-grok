@@ -6291,8 +6291,17 @@ fn format_session_info(
         .unwrap_or_default();
     let version_display = xai_grok_version::display_version("");
     let auth_lines = format_auth_lines(is_api_key_auth, api_key_env_set);
+    let agent_line = info
+        .data
+        .agent_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("\n  Agent: {name}  (session profile — not a persona)"))
+        .unwrap_or_else(|| {
+            "\n  Agent: (default session profile)  (session profile — not a persona)".to_string()
+        });
     format!(
-        "{title_line}  Shell version: {version_display}\n{auth_lines}  Session ID: {session_id}{conversation_line}\n  Working directory: {cwd}\n  Model: {model_display}{model_hash_line}{backend_line}{sandbox_line}{turn_line}\n  Context: {used} / {total} tokens ({pct}%)"
+        "{title_line}  Shell version: {version_display}\n{auth_lines}  Session ID: {session_id}{conversation_line}\n  Working directory: {cwd}{agent_line}\n  Model: {model_display}{model_hash_line}{backend_line}{sandbox_line}{turn_line}\n  Context: {used} / {total} tokens ({pct}%)\n  Tip: /agents switches the session agent; personas only apply to subagents (/personas)."
     )
 }
 /// Auth section for `/session-info` — login method + where to manage account/credits.
@@ -6307,7 +6316,7 @@ fn format_auth_lines(is_api_key_auth: bool, api_key_env_set: bool) -> String {
             "  Auth method: API key\n"
         };
         return format!(
-            "{method}  Manage account and credits: console.x.ai\n  Run `grok login` to use your SuperGrok subscription instead.\n"
+            "{method}  Manage account and credits: console.x.ai\n  Run `open-grok login` to use your SuperGrok subscription instead.\n"
         );
     }
     String::from(

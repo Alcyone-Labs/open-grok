@@ -307,6 +307,9 @@ pub struct PromptFlag<'a> {
 
 /// Optional info line rendered below the prompt text.
 pub struct PromptInfo<'a> {
+    /// Primary session agent definition name (e.g. `mecha-builder`), when known.
+    /// Shown before the model so session identity is obvious at a glance.
+    pub agent_name: Option<&'a str>,
     /// Primary label to display on the info line (left side).
     pub model_name: &'a str,
     /// Flags to display on the left side, joined by " · " (e.g., "plan", "always-approve").
@@ -3355,7 +3358,7 @@ impl PromptWidget {
         Style::default().fg(fg).bg(bg)
     }
 
-    /// Render the info line: left-aligned `model_name · flag1 · flag2`, right-aligned `multiline`.
+    /// Render the info line: left-aligned `[agent:name ·] model_name · flag1 · flag2`, right-aligned `multiline`.
     ///
     /// `pub(crate)` so the dashboard's dispatch box (which draws its own
     /// chrome) can paint an identical model + mode indicator on its bottom
@@ -3404,6 +3407,10 @@ impl PromptWidget {
             };
             let warning_style = Style::default().fg(fg).bg(bg);
             left_spans.push(Span::styled(warning.to_owned(), warning_style));
+            left_spans.push(Span::styled(" · ", sep_style));
+        }
+        if let Some(agent) = info.agent_name.filter(|name| !name.is_empty()) {
+            left_spans.push(Span::styled(format!("agent:{agent}"), model_style));
             left_spans.push(Span::styled(" · ", sep_style));
         }
         left_spans.push(Span::styled(info.model_name, model_style));
