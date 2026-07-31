@@ -2,7 +2,27 @@
 
 set -euo pipefail
 
+# Preserve the directory the user launched from. This script must `cd` into the
+# repo so `cargo run` can find the workspace, but Open Grok treats process cwd
+# as the session project root unless `--cwd` is set.
+launch_dir="$(pwd -P 2>/dev/null || pwd)"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-exec cargo run --locked --quiet -p xai-grok-pager-bin --bin open-grok -- "$@"
+# If the caller already passed --cwd, respect it. Otherwise pin the launch dir.
+has_cwd=0
+for arg in "$@"; do
+    case "$arg" in
+        --cwd|--cwd=*)
+            has_cwd=1
+            break
+            ;;
+    esac
+done
+
+if [[ "$has_cwd" -eq 0 ]]; then
+    exec cargo run --locked --quiet -p xai-grok-pager-bin --bin open-grok -- \
+        --cwd "$launch_dir" "$@"
+else
+    exec cargo run --locked --quiet -p xai-grok-pager-bin --bin open-grok -- "$@"
+fi
