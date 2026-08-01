@@ -2,8 +2,7 @@ use super::*;
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use xai_chat_state::conversation_util::replace_or_insert_system_head;
 
-const MODEL_SWITCH_ACTIVE_TURN_ERROR: &str =
-    "Cannot switch models while a turn is active; cancel it or wait for it to finish.";
+const MODEL_SWITCH_ACTIVE_TURN_ERROR: &str = "Cannot switch models while a turn is active; cancel it (Esc) or wait for it to finish, then try /model again.";
 
 fn code_mode_transport_enabled(mode: xai_grok_sampling_types::ToolMode) -> bool {
     matches!(

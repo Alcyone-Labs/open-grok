@@ -975,7 +975,7 @@ fn dashboard_image_dispatch_cancel_rewind_resends_attachment() {
         agent.session.session_id = Some(acp::SessionId::new("dashboard-image"));
         agent.session.state = AgentState::Idle;
         assert!(matches!(
-            maybe_drain_queue(agent).effects.as_slice(),
+            maybe_drain_queue(agent, new_id).effects.as_slice(),
             [Effect::SendPromptBlocks { .. }]
         ));
     }

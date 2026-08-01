@@ -692,7 +692,12 @@ pub struct AgentSession {
     /// shell side via `ReconnectState::user_selected_model`; the pager still
     /// applies live remote switches and updates this field to match.
     pub user_model_preference: Option<acp::ModelId>,
-    /// `/model X [effort]` issued before the session was ready, applied on SessionCreated.
+    /// Queued model switch applied once it is safe:
+    /// - `/model` before the session exists (SessionCreated flush)
+    /// - `/model` while a turn is active / retrying / swarming (idle drain flush)
+    ///
+    /// Flushed by [`crate::app::dispatch::maybe_drain_queue`] before any queued
+    /// prompt is sent, so the next turn uses the new model. Last write wins.
     pub deferred_model_switch: Option<(acp::ModelId, Option<ReasoningEffort>)>,
     /// Central bg task state, keyed by task_id.
     pub bg_tasks: BTreeMap<String, BgTaskState>,

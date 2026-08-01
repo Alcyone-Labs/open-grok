@@ -1499,7 +1499,7 @@ fn rejected_actor_model_switch_keeps_resident_handle_unchanged() {
                     }
                     crate::session::SessionCommand::SetSessionModel { responds_to, .. } => {
                         let _ = responds_to.send(Err(acp::Error::invalid_request().data(
-                            "Cannot switch models while a turn is active; cancel it or wait for it to finish.",
+                            "Cannot switch models while a turn is active; cancel it (Esc) or wait for it to finish, then try /model again.",
                         )));
                         break;
                     }
@@ -1521,7 +1521,7 @@ fn rejected_actor_model_switch_keeps_resident_handle_unchanged() {
         assert_eq!(
             error.data.as_ref().and_then(serde_json::Value::as_str),
             Some(
-                "Cannot switch models while a turn is active; cancel it or wait for it to finish."
+                "Cannot switch models while a turn is active; cancel it (Esc) or wait for it to finish, then try /model again."
             )
         );
         assert_eq!(

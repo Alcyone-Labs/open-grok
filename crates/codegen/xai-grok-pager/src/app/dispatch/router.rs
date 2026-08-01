@@ -880,6 +880,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 agent.session.deferred_model_switch = Some((model_id, effort));
                 return vec![];
             };
+            // Mid-turn / mid-retry / mid-cancel: shell rejects SetSessionModel.
+            // Queue locally and flush on the next idle drain.
+            if agent.session.state.is_busy() {
+                return crate::app::dispatch::session::lifecycle::queue_model_switch_until_idle(
+                    agent, model_id, effort,
+                );
+            }
             agent.session.model_switch_pending = true;
             vec![Effect::SwitchModel {
                 agent_id: id,

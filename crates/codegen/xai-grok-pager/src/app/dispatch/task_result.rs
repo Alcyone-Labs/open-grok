@@ -552,10 +552,10 @@ fn handle_kimi_model_rebind_complete(
         // the pager now considers current before releasing the queue.
         agent.session.model_switch_pending = false;
         let Some(target_model) = agent.session.models.current.clone() else {
-            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+            return crate::app::dispatch::maybe_drain_queue(agent, agent_id).effects;
         };
         if target_model == model_id {
-            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+            return crate::app::dispatch::maybe_drain_queue(agent, agent_id).effects;
         }
         let Some(current_session_id) = agent.session.session_id.clone() else {
             agent.session.provider_rebind_pending = true;
@@ -799,10 +799,10 @@ fn handle_fireworks_model_rebind_complete(
         // model the pager now considers current before releasing the queue.
         agent.session.model_switch_pending = false;
         let Some(target_model) = agent.session.models.current.clone() else {
-            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+            return crate::app::dispatch::maybe_drain_queue(agent, agent_id).effects;
         };
         if target_model == model_id {
-            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+            return crate::app::dispatch::maybe_drain_queue(agent, agent_id).effects;
         }
         let Some(current_session_id) = agent.session.session_id.clone() else {
             agent.session.provider_rebind_pending = true;
@@ -1031,10 +1031,10 @@ fn handle_deepseek_model_rebind_complete(
     if !still_owned || !agent.session.provider_rebind_pending {
         agent.session.model_switch_pending = false;
         let Some(target_model) = agent.session.models.current.clone() else {
-            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+            return crate::app::dispatch::maybe_drain_queue(agent, agent_id).effects;
         };
         if target_model == model_id {
-            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+            return crate::app::dispatch::maybe_drain_queue(agent, agent_id).effects;
         }
         let Some(current_session_id) = agent.session.session_id.clone() else {
             agent.session.provider_rebind_pending = true;
@@ -1252,10 +1252,10 @@ fn handle_opencode_go_model_rebind_complete(
     if !still_owned || !agent.session.provider_rebind_pending {
         agent.session.model_switch_pending = false;
         let Some(target_model) = agent.session.models.current.clone() else {
-            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+            return crate::app::dispatch::maybe_drain_queue(agent, agent_id).effects;
         };
         if target_model == model_id {
-            return crate::app::dispatch::maybe_drain_queue(agent).effects;
+            return crate::app::dispatch::maybe_drain_queue(agent, agent_id).effects;
         }
         let Some(current_session_id) = agent.session.session_id.clone() else {
             agent.session.provider_rebind_pending = true;

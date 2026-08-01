@@ -196,7 +196,7 @@ impl QueueDrain {
     }
 }
 
-pub(crate) fn maybe_drain_queue(agent: &mut AgentView) -> QueueDrain {
+pub(crate) fn maybe_drain_queue(agent: &mut AgentView, agent_id: AgentId) -> QueueDrain {
     use crate::app::agent::QueueEntryKind;
     use crate::unified_log as ulog;
 
@@ -216,6 +216,38 @@ pub(crate) fn maybe_drain_queue(agent: &mut AgentView) -> QueueDrain {
     if !agent.session.state.is_idle() {
         log_blocked("turn_running", sid);
         return QueueDrain::blocked();
+    }
+    // A `/model` issued mid-turn (rate-limit retry, swarm, etc.) is stashed in
+    // `deferred_model_switch`. Apply it as soon as the session is idle and
+    // before any queued prompt drains, so the next turn uses the new model.
+    if !agent.session.model_switch_pending
+        && let Some((model_id, effort)) = agent.session.deferred_model_switch.take()
+    {
+        let Some(session_id) = agent.session.session_id.clone() else {
+            // Session not bound yet — put it back for SessionCreated.
+            agent.session.deferred_model_switch = Some((model_id, effort));
+            log_blocked("deferred_model_no_session", sid);
+            return QueueDrain::blocked();
+        };
+        agent.session.model_switch_pending = true;
+        ulog::info(
+            "model.switch_flushed",
+            sid,
+            Some(serde_json::json!({
+                "model_id": model_id.0.as_ref(),
+                "has_effort": effort.is_some(),
+            })),
+        );
+        return QueueDrain {
+            effects: vec![Effect::SwitchModel {
+                agent_id,
+                session_id,
+                model_id,
+                effort,
+                prev_model_id: None,
+            }],
+            page_flip_entry: None,
+        };
     }
     // Hold the drain during an in-flight model switch. See the
     // `model_switch_pending` field doc for why a reconnect must clear it.
@@ -969,7 +1001,7 @@ pub(crate) fn maybe_drain_queue_and_note_peek(app: &mut AppView, agent_id: Agent
         let Some(agent) = app.agents.get_mut(&agent_id) else {
             return vec![];
         };
-        maybe_drain_queue(agent)
+        maybe_drain_queue(agent, agent_id)
     };
     note_peek_page_flip(app, agent_id, drain.page_flip_entry);
     drain.effects
@@ -1391,9 +1423,10 @@ mod tests {
     fn drain_reports_page_flip_only_when_prompt_starts() {
         crate::appearance::cache::set_page_flip_on_send(true);
         let mut app = test_app_with_agent();
-        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        let id = AgentId(0);
+        let agent = app.agents.get_mut(&id).unwrap();
         agent.session.enqueue_prompt("first".into());
-        let started = maybe_drain_queue(agent);
+        let started = maybe_drain_queue(agent, id);
         let entry_id = started.page_flip_entry.expect("prompt starts a page flip");
         assert_eq!(
             agent.scrollback.index_of_id(entry_id),
@@ -1401,7 +1434,7 @@ mod tests {
         );
 
         agent.session.enqueue_prompt("queued".into());
-        let blocked = maybe_drain_queue(agent);
+        let blocked = maybe_drain_queue(agent, id);
         assert!(blocked.effects.is_empty());
         assert!(blocked.page_flip_entry.is_none());
     }
@@ -2153,7 +2186,7 @@ mod tests {
         );
 
         // Drain while loading_replay is true → must be blocked.
-        let effects = maybe_drain_queue(app.agents.get_mut(&id).unwrap()).effects;
+        let effects = maybe_drain_queue(app.agents.get_mut(&id).unwrap(), id).effects;
         assert!(
             effects.is_empty(),
             "drain must be blocked during loading_replay"
@@ -2168,7 +2201,7 @@ mod tests {
         app.agents.get_mut(&id).unwrap().session.loading_replay = false;
 
         // Drain again → should succeed now.
-        let effects = maybe_drain_queue(app.agents.get_mut(&id).unwrap()).effects;
+        let effects = maybe_drain_queue(app.agents.get_mut(&id).unwrap(), id).effects;
         assert_eq!(effects.len(), 1);
         assert!(
             matches!(&effects[0], Effect::SendPromptBlocks { .. }),

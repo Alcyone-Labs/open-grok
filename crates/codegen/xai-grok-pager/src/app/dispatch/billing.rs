@@ -644,7 +644,7 @@ pub(super) fn handle_credit_limit_recheck_complete(
     // Either way, drop the stashed prompt.
     agent.credit_limit_stashed_prompt = None;
 
-    let mut drain = maybe_drain_queue(agent);
+    let mut drain = maybe_drain_queue(agent, agent_id);
     drain.effects.push(Effect::FetchBilling {
         agent_id,
         silent: true,

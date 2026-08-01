@@ -1715,7 +1715,6 @@ fn available_agent_names(ctx: &SubagentSpawnContext) -> Vec<String> {
     )
 }
 
-
 /// Resolve only a canonical specialist.  Generic top-level profiles remain
 /// valid primary/harness definitions, but must not become spawnable merely
 /// because the generic resolver can find them.

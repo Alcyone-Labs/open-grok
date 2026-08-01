@@ -1031,7 +1031,7 @@ pub(super) fn dispatch_send_prompt_inner(
                 }
             }
         }
-        maybe_drain_queue(agent)
+        maybe_drain_queue(agent, id)
     };
     effects.extend(drain.effects);
     note_peek_page_flip(app, id, drain.page_flip_entry);
@@ -1128,7 +1128,7 @@ pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> 
     agent.session.enqueue_bash_command(command.clone());
     agent.prompt.set_text("");
 
-    let drain = maybe_drain_queue(agent);
+    let drain = maybe_drain_queue(agent, id);
     note_peek_page_flip(app, id, drain.page_flip_entry);
     drain.effects
 }
@@ -1650,7 +1650,7 @@ pub(super) fn handle_prompt_response(
             None
         };
 
-        let drain = maybe_drain_queue(agent);
+        let drain = maybe_drain_queue(agent, agent_id);
         let page_flip_entry = adopted_page_flip.or(drain.page_flip_entry);
         let mut effects = drain.effects;
 
@@ -1732,7 +1732,7 @@ pub(super) fn handle_compact_complete(
         if app.reconnect_pending {
             return vec![];
         }
-        let drain = maybe_drain_queue(agent);
+        let drain = maybe_drain_queue(agent, agent_id);
         note_peek_page_flip(app, agent_id, drain.page_flip_entry);
         return drain.effects;
     }

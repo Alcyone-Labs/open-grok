@@ -2290,9 +2290,17 @@ pub(in crate::app::dispatch) fn set_default_model(
     // pipeline handles its own deferred-switch semantics for the
     // no-session-id-yet case (see line 583 of this file).
     if let Some(sid) = session_id {
-        // We already hold a reference path to the agent above; re-borrow
-        // mutably here to flip `model_switch_pending`.
         if let Some(agent) = app.agents.get_mut(&aid) {
+            // Same mid-turn gate as `/model`: queue until idle rather than
+            // round-tripping a guaranteed shell rejection.
+            if agent.session.state.is_busy() {
+                effects.extend(
+                    crate::app::dispatch::session::lifecycle::queue_model_switch_until_idle(
+                        agent, new_id, None,
+                    ),
+                );
+                return effects;
+            }
             agent.session.model_switch_pending = true;
         }
         effects.push(Effect::SwitchModel {

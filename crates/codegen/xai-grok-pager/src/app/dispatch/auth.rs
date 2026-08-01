@@ -839,7 +839,11 @@ pub(super) fn handle_auth_complete(
             // that 401'd).
             let mut retry_effects = Vec::new();
             let mut page_flips = Vec::new();
-            for agent in app.agents.values_mut() {
+            let agent_ids: Vec<_> = app.agents.keys().copied().collect();
+            for agent_id in agent_ids {
+                let Some(agent) = app.agents.get_mut(&agent_id) else {
+                    continue;
+                };
                 strip_trailing_auth_error_blocks(agent);
                 // Auto-resubmit the prompt that failed on the expired
                 // login so the user doesn't have to retype it. The
@@ -850,7 +854,7 @@ pub(super) fn handle_auth_complete(
                         "Re-authenticated. Retrying\u{2026}".to_string(),
                     ));
                     agent.session.enqueue_in_flight_prompt_front(prompt);
-                    let drain = maybe_drain_queue(agent);
+                    let drain = maybe_drain_queue(agent, agent_id);
                     retry_effects.extend(drain.effects);
                     page_flips.push((agent.session.id, drain.page_flip_entry));
                 }

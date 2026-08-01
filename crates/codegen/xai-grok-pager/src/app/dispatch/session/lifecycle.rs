@@ -962,7 +962,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
                 page_flip_entry: None,
             }
         } else {
-            let drain = maybe_drain_queue(agent);
+            let drain = maybe_drain_queue(agent, agent_id);
             let mut effects = provider_effects;
             effects.extend(drain.effects);
             QueueDrain {
@@ -1078,7 +1078,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
                 page_flip_entry: None,
             }
         } else {
-            let drain = maybe_drain_queue(agent);
+            let drain = maybe_drain_queue(agent, agent_id);
             let mut effects = provider_effects;
             effects.extend(drain.effects);
             QueueDrain {
@@ -1267,6 +1267,42 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
     }
     vec![]
 }
+
+/// User-facing copy when `/model` lands while a turn is still active.
+pub(crate) const MODEL_SWITCH_QUEUED_TOAST: &str =
+    "Model switch queued — applies when this turn finishes (Esc cancels sooner)";
+
+/// Shell active-turn rejection text (and substrings the pager may see after
+/// sanitize). Used to rewrite a late race failure into the same queue UX.
+pub(crate) const MODEL_SWITCH_ACTIVE_TURN_MARKER: &str =
+    "Cannot switch models while a turn is active";
+
+/// Stash a model switch for the next idle drain and tell the user why it
+/// did not apply immediately. Last write wins if several switches queue.
+pub(in crate::app::dispatch) fn queue_model_switch_until_idle(
+    agent: &mut AgentView,
+    model_id: acp::ModelId,
+    effort: Option<ReasoningEffort>,
+) -> Vec<Effect> {
+    let display = agent.session.models.display_name_for(&model_id);
+    agent.session.deferred_model_switch = Some((model_id, effort));
+    // Do not hold `model_switch_pending`: that flag blocks prompt drain for an
+    // in-flight RPC. The idle drain will raise it when it emits SwitchModel.
+    let toast = format!("{MODEL_SWITCH_QUEUED_TOAST} → {display}");
+    agent.show_toast(&toast);
+    agent
+        .scrollback
+        .push_block(RenderBlock::system(format!(
+            "Queued model switch to {display}. It applies when the current turn ends (Esc cancels the turn sooner). Already-running swarm members keep their spawn-time model."
+        )));
+    vec![]
+}
+
+fn is_active_turn_model_switch_error(msg: &str) -> bool {
+    msg.contains(MODEL_SWITCH_ACTIVE_TURN_MARKER)
+        || msg.contains("cancel it or wait for it to finish")
+}
+
 pub(in crate::app::dispatch) fn handle_switch_model_complete(
     app: &mut AppView,
     agent_id: AgentId,
@@ -1320,13 +1356,26 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 return open_agent_type_mismatch_question(app, model_id, effort, &display_name);
             }
             Err(SwitchModelError::Other(msg)) => {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::system(format!("Couldn't switch model: {msg}")));
-                vec![]
+                if is_active_turn_model_switch_error(&msg) {
+                    // Race: turn became active between dispatch and shell gate.
+                    // Re-queue for the idle flush with clearer UX.
+                    let display = agent.session.models.display_name_for(&model_id);
+                    agent.session.deferred_model_switch = Some((model_id, effort));
+                    let toast = format!("{MODEL_SWITCH_QUEUED_TOAST} → {display}");
+                    agent.show_toast(&toast);
+                    agent.scrollback.push_block(RenderBlock::system(format!(
+                        "Queued model switch to {display}. It applies when the current turn ends (Esc cancels the turn sooner). Already-running swarm members keep their spawn-time model."
+                    )));
+                    vec![]
+                } else {
+                    agent
+                        .scrollback
+                        .push_block(RenderBlock::system(format!("Couldn't switch model: {msg}")));
+                    vec![]
+                }
             }
         };
-        let drain = maybe_drain_queue(agent);
+        let drain = maybe_drain_queue(agent, agent_id);
         effects.extend(drain.effects);
         note_peek_page_flip(app, agent_id, drain.page_flip_entry);
         effects

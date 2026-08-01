@@ -1810,7 +1810,7 @@ pub(super) fn dispatch_dashboard_peek_reply(
                 entry.images = images;
             }
         }
-        maybe_drain_queue(agent)
+        maybe_drain_queue(agent, agent_id)
     };
     note_peek_page_flip(app, agent_id, drain.page_flip_entry);
     let mut effects = drain.effects;

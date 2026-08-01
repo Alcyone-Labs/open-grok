@@ -432,7 +432,7 @@ pub(crate) fn reconcile_overdue_turn_ends(app: &mut AppView) -> Option<Vec<Effec
         } else {
             None
         };
-        let drain = maybe_drain_queue(agent);
+        let drain = maybe_drain_queue(agent, id);
         effects.extend(drain.effects);
         drained_ids.push((id, adopted_page_flip.or(drain.page_flip_entry)));
     }

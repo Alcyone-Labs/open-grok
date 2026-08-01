@@ -1063,7 +1063,7 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             {
                 agent.session.provider_rebind_pending = false;
                 cancel_pending_provider_rebind = pending_rebind_provider;
-                let drain = crate::app::dispatch::maybe_drain_queue(agent);
+                let drain = crate::app::dispatch::maybe_drain_queue(agent, agent.session.id);
                 agent.pending_effects.extend(drain.effects);
             }
             let resolved_effort = agent.session.models.reasoning_effort;

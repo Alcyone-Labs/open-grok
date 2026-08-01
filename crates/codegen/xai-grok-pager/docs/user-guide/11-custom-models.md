@@ -45,6 +45,12 @@ Or use the alias:
 
 Press `Ctrl+M` from the scrollback pane to open the model picker. It lists all available models, both built-in and custom, and lets you switch with a single keystroke. With the prompt focused, `Ctrl+M` toggles multiline input instead -- use `/model` to switch without leaving the prompt.
 
+### Switching while a turn is active
+
+If a turn is still running — including rate-limit retries or an in-flight swarm — `/model` does **not** fail silently. Open Grok queues the switch and applies it as soon as the session is idle, **before** any queued prompt drains. Already-running swarm members keep the model they were spawned with; only the primary session and future children pick up the new model.
+
+To switch sooner: cancel the turn with `Esc` (or `Ctrl+C` on an empty prompt), wait for idle, then `/model` if you need a different choice than the one already queued.
+
 ### Config Default
 
 Set a persistent default in `~/.opengrok/config.toml`:

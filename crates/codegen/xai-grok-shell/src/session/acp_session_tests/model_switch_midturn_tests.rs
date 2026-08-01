@@ -39,7 +39,9 @@ async fn assert_switch_rejected_without_mutation(actor: &SessionActor) {
 
     assert_eq!(
         error.data.as_ref().and_then(serde_json::Value::as_str),
-        Some("Cannot switch models while a turn is active; cancel it or wait for it to finish.")
+        Some(
+            "Cannot switch models while a turn is active; cancel it (Esc) or wait for it to finish, then try /model again."
+        )
     );
     let after_config = actor
         .chat_state_handle
@@ -117,7 +119,7 @@ async fn harness_rebuild_rejects_the_send_now_cancellation_window() {
             assert_eq!(
                 error.data.as_ref().and_then(serde_json::Value::as_str),
                 Some(
-                    "Cannot switch models while a turn is active; cancel it or wait for it to finish."
+                    "Cannot switch models while a turn is active; cancel it (Esc) or wait for it to finish, then try /model again."
                 )
             );
             assert_eq!(actor.agent.borrow().definition().name, before_agent);

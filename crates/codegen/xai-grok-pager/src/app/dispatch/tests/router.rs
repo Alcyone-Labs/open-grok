@@ -1004,6 +1004,180 @@ fn switch_model_allowed_when_app_chat_mode() {
     assert!(matches!(&effects[0], Effect::SwitchModel { model_id: mid, .. } if mid == &model_id));
     assert!(app.agents[&id].session.model_switch_pending);
 }
+
+#[test]
+fn switch_model_while_turn_running_queues_until_idle() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
+
+    let effects = dispatch(
+        Action::SwitchModel {
+            model_id: model_id.clone(),
+            effort: None,
+        },
+        &mut app,
+    );
+    assert!(
+        effects.is_empty(),
+        "busy turn must not emit SwitchModel RPC, got {effects:?}"
+    );
+    assert!(
+        !app.agents[&id].session.model_switch_pending,
+        "queued switch must not raise model_switch_pending (that blocks prompt drain)"
+    );
+    assert_eq!(
+        app.agents[&id].session.deferred_model_switch,
+        Some((model_id.clone(), None))
+    );
+
+    // Turn ends → idle drain flushes the switch before any prompt.
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::Idle;
+    let effects = maybe_drain_queue(app.agents.get_mut(&id).unwrap(), id).effects;
+    assert!(
+        matches!(
+            &effects[..],
+            [Effect::SwitchModel {
+                model_id: mid,
+                effort: None,
+                ..
+            }] if mid == &model_id
+        ),
+        "idle drain must flush queued model switch first, got {effects:?}"
+    );
+    assert!(app.agents[&id].session.model_switch_pending);
+    assert!(app.agents[&id].session.deferred_model_switch.is_none());
+}
+
+#[test]
+fn switch_model_while_cancelling_queues_until_idle() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnCancelling;
+
+    let effects = dispatch(
+        Action::SwitchModel {
+            model_id: model_id.clone(),
+            effort: Some(xai_grok_shell::sampling::types::ReasoningEffort::High),
+        },
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert_eq!(
+        app.agents[&id].session.deferred_model_switch,
+        Some((
+            model_id,
+            Some(xai_grok_shell::sampling::types::ReasoningEffort::High)
+        ))
+    );
+}
+
+#[test]
+fn queued_model_switch_last_write_wins() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
+    let first = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
+    let second = acp::ModelId::new(std::sync::Arc::from("auto"));
+
+    let _ = dispatch(
+        Action::SwitchModel {
+            model_id: first,
+            effort: None,
+        },
+        &mut app,
+    );
+    let _ = dispatch(
+        Action::SwitchModel {
+            model_id: second.clone(),
+            effort: None,
+        },
+        &mut app,
+    );
+    assert_eq!(
+        app.agents[&id].session.deferred_model_switch,
+        Some((second, None))
+    );
+}
+
+#[test]
+fn switch_model_complete_active_turn_error_requeues_while_busy() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.model_switch_pending = true;
+        // Still busy when the rejection arrives — keep the queue, do not re-fire.
+        agent.session.state = AgentState::TurnRunning;
+    }
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SwitchModelComplete {
+            agent_id: id,
+            model_id: model_id.clone(),
+            effort: None,
+            result: Err(crate::app::actions::SwitchModelError::Other(
+                "Cannot switch models while a turn is active; cancel it (Esc) or wait".into(),
+            )),
+            prev_model_id: None,
+        }),
+        &mut app,
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::SwitchModel { .. })),
+        "while still busy, re-queue must not immediately re-fire SwitchModel, got {effects:?}"
+    );
+    assert!(!app.agents[&id].session.model_switch_pending);
+    assert_eq!(
+        app.agents[&id].session.deferred_model_switch,
+        Some((model_id, None))
+    );
+}
+
+#[test]
+fn switch_model_complete_active_turn_error_flushes_when_idle() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .session
+        .model_switch_pending = true;
+    // Idle by the time the rejection arrives (turn ended mid-RPC): flush now.
+    assert!(app.agents[&id].session.state.is_idle());
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SwitchModelComplete {
+            agent_id: id,
+            model_id: model_id.clone(),
+            effort: None,
+            result: Err(crate::app::actions::SwitchModelError::Other(
+                "Cannot switch models while a turn is active; cancel it (Esc) or wait".into(),
+            )),
+            prev_model_id: None,
+        }),
+        &mut app,
+    );
+    assert!(
+        matches!(
+            &effects[..],
+            [Effect::SwitchModel {
+                model_id: mid,
+                ..
+            }] if mid == &model_id
+        ),
+        "idle completion path should flush the re-queued switch immediately, got {effects:?}"
+    );
+    assert!(app.agents[&id].session.model_switch_pending);
+    assert!(app.agents[&id].session.deferred_model_switch.is_none());
+}
+
 #[test]
 fn agent_type_mismatch_cancel_is_noop() {
     let mut app = test_app_with_agent();
